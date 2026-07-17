@@ -76,7 +76,8 @@
     // ==========================================
     if (currentUrl.includes("photofeeler.com") || currentUrl.includes("mturkcontent.com") || document.querySelector('img:not([src*=".svg"])')) {
         
-        const MODELS_TO_TEST = ["gemini-flash-lite-latest", "gemini-1.5-flash"];
+        const MODELS_TO_TEST = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+        const MAX_RELOADS = 3;
 
         let hitCount = parseInt(localStorage.getItem('ben_hit_count') || '0');
         let nextTarget = parseInt(localStorage.getItem('ben_note_target') || '0');
@@ -101,7 +102,13 @@
 
         // 🔴 ফিক্স: স্ক্রিপ্ট হ্যাং হলে ভুলভাল সাবমিট না করে পেজ রিলোড করবে
         function forceReloadPage() {
-            console.log("⚠️ Error or Freeze Detected! Reloading page to get a fresh HIT...");
+            let reloadCount = parseInt(sessionStorage.getItem('ben_reload_count') || '0', 10);
+            if (reloadCount >= MAX_RELOADS) {
+                console.error(`🛑 Giving up after ${reloadCount} reloads. Leaving this tab open for manual review instead of looping forever.`);
+                return;
+            }
+            sessionStorage.setItem('ben_reload_count', (reloadCount + 1).toString());
+            console.log(`⚠️ Error or Freeze Detected! Reloading page (${reloadCount + 1}/${MAX_RELOADS}) to get a fresh HIT...`);
             setTimeout(() => window.location.reload(), 2000);
         }
 
@@ -184,6 +191,7 @@
                         let rawText = result.data.candidates[0].content.parts[0].text;
                         let cleanText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
                         let parsedData = JSON.parse(cleanText);
+                        sessionStorage.removeItem('ben_reload_count');
                         applyToForm(parsedData, false);
                         return;
                     } catch (parseErr) {
