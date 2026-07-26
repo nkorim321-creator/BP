@@ -36,7 +36,7 @@
 
     const currentUrl = window.location.href;
 
-    let API_KEY = GM_getValue('gemini_api_key', 'AQ.Ab8RN6IsscYPFLrkKdF51-vADwOiiIExBwO9AjAB7SZZ_grcQw');
+    let API_KEY = GM_getValue('gemini_api_key', '');
 
     GM_registerMenuCommand('Change Gemini API Key', () => {
         const newKey = prompt('Enter new Gemini API Key:', API_KEY);
@@ -47,9 +47,14 @@
         }
     });
 
-    if (!API_KEY) {
-        API_KEY = prompt('Enter Gemini API Key:');
-        GM_setValue('gemini_api_key', API_KEY);
+    if (!API_KEY || API_KEY.trim() === '') {
+        API_KEY = prompt('🔑 First time setup: Enter your Gemini API Key\n(Get one from aistudio.google.com)');
+        if (API_KEY && API_KEY.trim() !== '') {
+            GM_setValue('gemini_api_key', API_KEY.trim());
+        } else {
+            console.error('No API Key provided. Script will not work.');
+            return;
+        }
     }
 
     // ==========================================
