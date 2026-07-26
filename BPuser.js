@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater (Version 24.6 - Background Tab Fix)
+// @name         MTurk Human-Like Rater (Version 25.0 - True Human Behavior)
 // @namespace    http://tampermonkey.net/
-// @version      24.6
-// @description  Fixed: background tabs no longer stuck + isProcessing lock + click verification + submit try-catch
+// @version      25.0
+// @description  Bezier mouse curves, character typing, thinking delays, scroll, fatigue, idle movements
 // @author       You
 // @match        *://worker.mturk.com/*
 // @match        *://*.photofeeler.com/*
@@ -20,10 +20,8 @@
     'use strict';
 
     // ==========================================
-    // সেকশন ০: Background Tab Fix
+    // সেকশন ০: Background Tab Fix + Visibility
     // ==========================================
-
-    // আসল visibility state সেভ করো OVERRIDE করার আগে
     const nativeHiddenGetter = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden')?.get
                             || Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'hidden')?.get;
 
@@ -32,14 +30,12 @@
         return !document.hasFocus();
     }
 
-    // Override — page-এর নিজের script যেন মনে করে tab visible আছে
     Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return false; } });
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: function() { return 'visible'; } });
     window.addEventListener('visibilitychange', e => e.stopPropagation(), true);
 
     const currentUrl = window.location.href;
 
-    // API Key with menu to change
     let API_KEY = GM_getValue('gemini_api_key', 'AQ.Ab8RN6IsscYPFLrkKdF51-vADwOiiIExBwO9AjAB7SZZ_grcQw');
 
     GM_registerMenuCommand('Change Gemini API Key', () => {
@@ -115,6 +111,17 @@
 
         const MODELS_TO_TEST = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
 
+        // --- Session Fatigue: HIT বাড়লে delay বাড়ে ---
+        const sessionStartTime = Date.now();
+        let sessionHITsDone = parseInt(sessionStorage.getItem('ben_session_hits') || '0');
+
+        function getFatigueFactor() {
+            const minutesWorking = (Date.now() - sessionStartTime) / 60000;
+            const hitFatigue = Math.min(sessionHITsDone * 0.03, 0.5);
+            const timeFatigue = Math.min(minutesWorking * 0.005, 0.3);
+            return 1 + hitFatigue + timeFatigue;
+        }
+
         // --- UI Dashboard ---
         function initDashboard() {
             if (document.getElementById('ben-ai-dash')) return;
@@ -141,7 +148,7 @@
             const dash = document.createElement('div');
             dash.id = 'ben-ai-dash';
             dash.innerHTML = `
-                <div class="dash-title">🤖 AI Rater v24.6</div>
+                <div class="dash-title">🤖 AI Rater v25.0</div>
                 <div id="dash-metrics">
                     <div class="dash-row"><span class="dash-label">Target HITs:</span> <span class="dash-val" id="d-hit">Loading...</span></div>
                 </div>
@@ -169,6 +176,7 @@
                     <div class="dash-row"><span class="dash-label">Trust:</span> <span class="dash-val">${data.trustworthy}</span></div>
                     <div class="dash-row"><span class="dash-label">Attract:</span> <span class="dash-val">${data.attractive}</span></div>
                     <div class="dash-row"><span class="dash-label">Note:</span> <span style="color:#cbd5e1">"${data.note || 'None'}"</span></div>
+                    <div class="dash-row"><span class="dash-label">Fatigue:</span> <span style="color:#c084fc">${(getFatigueFactor()).toFixed(2)}x</span></div>
                 `;
             }
         }
@@ -337,12 +345,139 @@
         }
 
         // ==========================================
-        // Background-Aware Click System
+        // সেকশন ৪: True Human Mouse & Interaction System
         // ==========================================
 
         let currentMousePos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
-        // Background-safe: সরাসরি event dispatch, কোনো mousemove loop নেই
+        // Cubic Bezier interpolation — মানুষের হাত curved path-এ চলে
+        function cubicBezier(t, p0, p1, p2, p3) {
+            const mt = 1 - t;
+            return mt*mt*mt*p0 + 3*mt*mt*t*p1 + 3*mt*t*t*p2 + t*t*t*p3;
+        }
+
+        // Scroll element into view — মানুষ দেখে তারপর click করে
+        async function scrollToElement(element) {
+            const rect = element.getBoundingClientRect();
+            if (rect.top < 0 || rect.bottom > window.innerHeight) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 400) + 300));
+            }
+        }
+
+        // Random idle mouse movement — কাজের মাঝে image-এর দিকে তাকানো
+        async function randomIdleMovement() {
+            if (isTabReallyHidden()) return;
+            if (Math.random() > 0.35) return;
+
+            const idleX = currentMousePos.x + (Math.random() - 0.5) * 200;
+            const idleY = currentMousePos.y + (Math.random() - 0.5) * 150;
+            const clampedX = Math.max(50, Math.min(window.innerWidth - 50, idleX));
+            const clampedY = Math.max(50, Math.min(window.innerHeight - 50, idleY));
+
+            const steps = Math.floor(Math.random() * 8) + 5;
+            for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                const x = currentMousePos.x + (clampedX - currentMousePos.x) * t + (Math.random() - 0.5) * 3;
+                const y = currentMousePos.y + (clampedY - currentMousePos.y) * t + (Math.random() - 0.5) * 3;
+                document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 25) + 15));
+            }
+            currentMousePos.x = clampedX;
+            currentMousePos.y = clampedY;
+
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 500) + 200));
+        }
+
+        // Foreground: Bezier curve mouse movement + overshoot + correction
+        async function simulateHumanMouseClick(element) {
+            await scrollToElement(element);
+
+            const rect = element.getBoundingClientRect();
+            const targetX = rect.left + (rect.width * 0.15) + (Math.random() * rect.width * 0.7);
+            const targetY = rect.top + (rect.height * 0.15) + (Math.random() * rect.height * 0.7);
+
+            const startX = currentMousePos.x;
+            const startY = currentMousePos.y;
+            const distance = Math.sqrt((targetX - startX) ** 2 + (targetY - startY) ** 2);
+
+            // Bezier control points — পথ curved করে
+            const cpOffset = Math.max(distance * 0.25, 30);
+            const cp1x = startX + (targetX - startX) * 0.3 + (Math.random() - 0.5) * cpOffset;
+            const cp1y = startY + (targetY - startY) * 0.2 + (Math.random() - 0.5) * cpOffset;
+            const cp2x = startX + (targetX - startX) * 0.7 + (Math.random() - 0.5) * cpOffset * 0.4;
+            const cp2y = startY + (targetY - startY) * 0.8 + (Math.random() - 0.5) * cpOffset * 0.4;
+
+            const steps = Math.floor(Math.random() * 12) + 18;
+            const shouldOvershoot = Math.random() < 0.25;
+
+            let actualTargetX = targetX;
+            let actualTargetY = targetY;
+            if (shouldOvershoot) {
+                const overshootDist = Math.random() * 12 + 5;
+                const angle = Math.atan2(targetY - startY, targetX - startX);
+                actualTargetX = targetX + Math.cos(angle) * overshootDist;
+                actualTargetY = targetY + Math.sin(angle) * overshootDist;
+            }
+
+            for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+
+                let x = cubicBezier(t, startX, cp1x, cp2x, actualTargetX);
+                let y = cubicBezier(t, startY, cp1y, cp2y, actualTargetY);
+
+                x += (Math.random() - 0.5) * 1.5;
+                y += (Math.random() - 0.5) * 1.5;
+
+                document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+
+                // Variable speed: শুরু আর শেষে ধীর, মাঝখানে দ্রুত
+                const speedCurve = Math.sin(t * Math.PI);
+                const baseDelay = Math.floor(Math.random() * 12) + 8;
+                const delay = baseDelay + Math.floor((1 - speedCurve) * 18);
+                await new Promise(r => setTimeout(r, delay));
+            }
+
+            // Overshoot correction — overshoot হলে ফিরে আসা
+            if (shouldOvershoot) {
+                const corrSteps = Math.floor(Math.random() * 4) + 3;
+                for (let i = 1; i <= corrSteps; i++) {
+                    const t = i / corrSteps;
+                    const x = actualTargetX + (targetX - actualTargetX) * t + (Math.random() - 0.5) * 1;
+                    const y = actualTargetY + (targetY - actualTargetY) * t + (Math.random() - 0.5) * 1;
+                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+                    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 20) + 12));
+                }
+            }
+
+            currentMousePos.x = targetX;
+            currentMousePos.y = targetY;
+
+            // Pre-click hover — "পড়ছে" option টা
+            element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: targetX, clientY: targetY }));
+            element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: targetX, clientY: targetY }));
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 200) + 80));
+
+            // Click with pressure variation
+            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: targetX, clientY: targetY }));
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 90) + 35));
+            element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX, clientY: targetY }));
+
+            element.click();
+            if (element.parentElement) element.parentElement.click();
+            let hiddenInput = element.querySelector('input');
+            if (hiddenInput) hiddenInput.click();
+
+            // Post-click micro settle — click করার পর হাত একটু নড়ে
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 60) + 30));
+            const settleX = targetX + (Math.random() - 0.5) * 4;
+            const settleY = targetY + (Math.random() - 0.5) * 4;
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: settleX, clientY: settleY }));
+
+            return true;
+        }
+
+        // Background: fast dispatch
         async function backgroundFastClick(element) {
             const rect = element.getBoundingClientRect();
             const targetX = rect.left + (rect.width * 0.2) + (Math.random() * rect.width * 0.6);
@@ -366,35 +501,8 @@
                 await new Promise(r => setTimeout(r, 20));
                 hiddenInput.click();
             }
-
             currentMousePos.x = targetX;
             currentMousePos.y = targetY;
-        }
-
-        // Foreground-only: মাউস মুভমেন্ট সিমুলেশন সহ
-        async function simulateHumanMouseClick(element) {
-            const rect = element.getBoundingClientRect();
-            const targetX = rect.left + (rect.width * 0.2) + (Math.random() * rect.width * 0.6);
-            const targetY = rect.top + (rect.height * 0.2) + (Math.random() * rect.height * 0.6);
-            const steps = Math.floor(Math.random() * 15) + 15;
-
-            for (let i = 1; i <= steps; i++) {
-                const t = i / steps; const easeT = t * (2 - t);
-                const x = currentMousePos.x + (targetX - currentMousePos.x) * easeT;
-                const y = currentMousePos.y + (targetY - currentMousePos.y) * easeT;
-                element.ownerDocument.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
-                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 20) + 15));
-            }
-            currentMousePos.x = targetX; currentMousePos.y = targetY;
-            element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: targetX, clientY: targetY }));
-            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: targetX, clientY: targetY }));
-            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 80) + 40));
-            element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX, clientY: targetY }));
-            element.click();
-            if (element.parentElement) element.parentElement.click();
-            let hiddenInput = element.querySelector('input');
-            if (hiddenInput) hiddenInput.click();
-            return true;
         }
 
         async function forceClickExactText(searchText, expectedIndex = 0) {
@@ -409,7 +517,6 @@
             if (deepestMatches.length > expectedIndex) {
                 let element = deepestMatches[expectedIndex];
 
-                // isTabReallyHidden() ব্যবহার করো, override করা document.hidden না
                 if (isTabReallyHidden()) {
                     await backgroundFastClick(element);
                 } else {
@@ -420,26 +527,77 @@
             return false;
         }
 
-        // Background-aware delay: hidden tab-এ ছোট delay ব্যবহার করো
+        // ==========================================
+        // সেকশন ৫: Human-Like Typing System
+        // ==========================================
+
+        async function simulateHumanTyping(textarea, text) {
+            if (isTabReallyHidden()) {
+                textarea.value = text;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                return;
+            }
+
+            textarea.focus();
+            textarea.dispatchEvent(new Event('focus', { bubbles: true }));
+            textarea.value = '';
+
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+
+                textarea.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+
+                textarea.value += char;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+                textarea.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+
+                // Variable typing speed: 55-110 WPM equivalent
+                let delay = Math.floor(Math.random() * 80) + 45;
+
+                // Space-এর পর একটু বেশি pause — word gap
+                if (char === ' ') delay += Math.floor(Math.random() * 120) + 40;
+
+                // মাঝে মাঝে "thinking pause" — কী লিখব ভাবছে
+                if (Math.random() < 0.08) delay += Math.floor(Math.random() * 350) + 100;
+
+                await new Promise(r => setTimeout(r, delay));
+            }
+
+            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // ==========================================
+        // সেকশন ৬: Form Filling with Human Timing
+        // ==========================================
+
         function bgAwareSleep(foregroundMs) {
-            const ms = isTabReallyHidden() ? Math.min(foregroundMs, 200) : foregroundMs;
+            const fatigue = getFatigueFactor();
+            const ms = isTabReallyHidden() ? Math.min(foregroundMs, 200) : Math.floor(foregroundMs * fatigue);
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
         const clamp = (v) => Math.max(0, Math.min(3, Math.round(Number(v) || 0)));
 
         function applyToForm(data) {
-            updateStatus("Applying AI scores...");
+            updateStatus("Studying the photo...");
 
             data.acceptable = (data.acceptable === true || data.acceptable === "true");
             data.smart = clamp(data.smart);
             data.trustworthy = clamp(data.trustworthy);
             data.attractive = clamp(data.attractive);
 
-            const startDelay = isTabReallyHidden() ? Math.floor(Math.random() * 500) + 300 : Math.floor(Math.random() * 2000) + 2000;
+            // "Image দেখে ভাবছে" — ২-৫ সেকেন্ড thinking time (fatigue সহ)
+            const thinkingTime = isTabReallyHidden()
+                ? Math.floor(Math.random() * 500) + 300
+                : Math.floor((Math.random() * 3000 + 2000) * getFatigueFactor());
 
             setTimeout(async () => {
                 try {
+                    // মাঝে মাঝে image-এর দিকে মাউস নাড়ায়
+                    await randomIdleMovement();
+
                     let acceptText = data.acceptable ? "Yes" : "No";
                     let clickedAccept = await forceClickExactText(acceptText, 0);
                     if (!clickedAccept) {
@@ -462,7 +620,10 @@
                         localStorage.setItem('ben_hit_count', hitCount.toString());
                     }
 
-                    await bgAwareSleep(Math.floor(Math.random() * 800) + 500);
+                    // Smart: "বুদ্ধিমান দেখাচ্ছে কিনা ভাবছে"
+                    await bgAwareSleep(Math.floor(Math.random() * 1200) + 800);
+                    await randomIdleMovement();
+
                     const textMap = { 3: "3 Very", 2: "2 Yes", 1: "1 Somewhat", 0: "0 No" };
 
                     const clickScore = async (trait, score) => {
@@ -472,13 +633,20 @@
                     };
 
                     await clickScore('smart', data.smart);
-                    await bgAwareSleep(Math.floor(Math.random() * 800) + 600);
+
+                    // Trustworthy: "বিশ্বাসযোগ্য কিনা ভাবছে"
+                    await bgAwareSleep(Math.floor(Math.random() * 1500) + 1000);
+                    await randomIdleMovement();
 
                     await clickScore('trustworthy', data.trustworthy);
-                    await bgAwareSleep(Math.floor(Math.random() * 800) + 600);
+
+                    // Attractive: সাধারণত একটু বেশি সময় নেয়
+                    await bgAwareSleep(Math.floor(Math.random() * 1800) + 1200);
+                    await randomIdleMovement();
 
                     await clickScore('attractive', data.attractive);
-                    await bgAwareSleep(Math.floor(Math.random() * 800) + 600);
+
+                    await bgAwareSleep(Math.floor(Math.random() * 1000) + 600);
 
                     const allElements = Array.from(document.body.querySelectorAll('*'));
                     let skipExists = allElements.filter(el => {
@@ -487,27 +655,35 @@
                     }).filter((el, index, arr) => !arr.some(otherEl => el !== otherEl && el.contains(otherEl))).length > 0;
 
                     if (writeNoteThisTime || skipExists) {
-                        updateStatus("Adding comment...");
+                        updateStatus("Writing comment...");
                         let fallbackNote = (data.note && typeof data.note === 'string' && data.note.trim() !== "") ? data.note : "Great photo";
                         let textarea = document.querySelector('textarea');
                         if (textarea) {
-                            textarea.value = fallbackNote;
-                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                            await simulateHumanTyping(textarea, fallbackNote);
                         }
-                        await bgAwareSleep(Math.floor(Math.random() * 800) + 500);
+                        await bgAwareSleep(Math.floor(Math.random() * 800) + 400);
                     }
 
-                    updateStatus("Submitting...");
-                    const submitDelay = isTabReallyHidden() ? Math.floor(Math.random() * 500) + 300 : Math.floor(Math.random() * 2000) + 1500;
+                    // Submit আগে একটু "review" — ভাবছে সব ঠিক আছে কিনা
+                    updateStatus("Reviewing before submit...");
+                    await bgAwareSleep(Math.floor(Math.random() * 1500) + 800);
+                    await randomIdleMovement();
+
+                    const submitDelay = isTabReallyHidden()
+                        ? Math.floor(Math.random() * 500) + 300
+                        : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor());
 
                     setTimeout(async () => {
                         try {
                             sessionStorage.setItem('ben_just_submitted', 'true');
+                            sessionHITsDone++;
+                            sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
+
                             let clickedSubmit = await forceClickExactText('Submit', 0);
                             if (!clickedSubmit) {
                                 stopForManualAction("Submit button not found");
                             } else {
+                                updateStatus("Submitted! ✅");
                                 setTimeout(() => { isProcessing = false; }, 2000);
                             }
                         } catch (submitErr) {
@@ -520,10 +696,10 @@
                     console.error("Error in form:", err);
                     stopForManualAction(err.message || "Form Script Error");
                 }
-            }, startDelay);
+            }, thinkingTime);
         }
 
-        // Image detection with MutationObserver + fallback
+        // Image detection
         function initImageObserver() {
             const imgSelector = 'img:not([src*=".svg"]):not([src*="chrome-extension"]):not([width="1"]):not([height="1"])';
             const specificSelector = '.photo-container img, .rating-image img, img[src*="photofeeler"]';
