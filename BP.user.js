@@ -572,9 +572,8 @@
 
         function bgAwareSleep(foregroundMs) {
             if (isTabReallyHidden()) {
-                // Background: 800ms দিলে browser 1s বানায় — perfectly human-like gap
-                // Promise.resolve() দিয়ে একটু DOM update-এর সুযোগ দেওয়া
-                return new Promise(resolve => setTimeout(resolve, 800));
+                const bgMs = Math.floor(Math.random() * 1900) + 600;
+                return new Promise(resolve => setTimeout(resolve, bgMs));
             }
             const fatigue = getFatigueFactor();
             return new Promise(resolve => setTimeout(resolve, Math.floor(foregroundMs * fatigue)));
@@ -590,9 +589,8 @@
             data.trustworthy = clamp(data.trustworthy);
             data.attractive = clamp(data.attractive);
 
-            // Initial thinking delay — image দেখে ভাবছে
             const thinkingTime = isTabReallyHidden()
-                ? 800
+                ? Math.floor(Math.random() * 1500) + 800
                 : Math.floor((Math.random() * 3000 + 2000) * getFatigueFactor());
 
             // সব কিছু একটাই setTimeout-এর ভেতরে — flat structure, কোনো nested setTimeout নেই
@@ -622,7 +620,8 @@
                         localStorage.setItem('ben_hit_count', hitCount.toString());
                     }
 
-                    await bgAwareSleep(Math.floor(Math.random() * 1200) + 800);
+                    const smartDelay = Math.floor(Math.random() * 2000) + 800;
+                    await bgAwareSleep(smartDelay);
                     await randomIdleMovement();
 
                     const textMap = { 3: "3 Very", 2: "2 Yes", 1: "1 Somewhat", 0: "0 No" };
@@ -631,21 +630,26 @@
                         const traitIndex = { 'smart': 0, 'trustworthy': 1, 'attractive': 2 }[trait];
                         let clicked = await forceClickExactText(textMap[score], traitIndex);
                         if (!clicked) throw new Error(`Failed to click rating for ${trait}`);
+                        if (Math.random() < 0.25) {
+                            await bgAwareSleep(Math.floor(Math.random() * 600) + 200);
+                        }
                     };
 
                     await clickScore('smart', data.smart);
 
-                    await bgAwareSleep(Math.floor(Math.random() * 1500) + 1000);
-                    await randomIdleMovement();
+                    const trustDelay = Math.floor(Math.random() * 2500) + 600;
+                    await bgAwareSleep(trustDelay);
+                    if (Math.random() < 0.3) await randomIdleMovement();
 
                     await clickScore('trustworthy', data.trustworthy);
 
-                    await bgAwareSleep(Math.floor(Math.random() * 1800) + 1200);
+                    const attractDelay = Math.floor(Math.random() * 3000) + 1000;
+                    await bgAwareSleep(attractDelay);
                     await randomIdleMovement();
 
                     await clickScore('attractive', data.attractive);
 
-                    await bgAwareSleep(Math.floor(Math.random() * 1000) + 600);
+                    await bgAwareSleep(Math.floor(Math.random() * 1200) + 500);
 
                     const allElements = Array.from(document.body.querySelectorAll('*'));
                     let skipExists = allElements.filter(el => {
@@ -664,11 +668,13 @@
                     }
 
                     updateStatus("Reviewing before submit...");
-                    await bgAwareSleep(Math.floor(Math.random() * 1500) + 800);
-                    await randomIdleMovement();
+                    const reviewTime = Math.floor(Math.random() * 2500) + 800;
+                    await bgAwareSleep(reviewTime);
+                    if (Math.random() < 0.4) await randomIdleMovement();
 
-                    // Submit — nested setTimeout বাদ, সরাসরি await
-                    await bgAwareSleep(isTabReallyHidden() ? 800 : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor()));
+                    await bgAwareSleep(isTabReallyHidden()
+                        ? Math.floor(Math.random() * 1200) + 500
+                        : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor()));
 
                     try {
                         sessionStorage.setItem('ben_just_submitted', 'true');
