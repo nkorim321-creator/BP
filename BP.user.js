@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater (Version 25.0 - True Human Behavior)
+// @name         MTurk Human-Like Rater V25 Human
 // @namespace    http://tampermonkey.net/
 // @version      25.0
 // @description  Bezier mouse curves, character typing, thinking delays, scroll, fatigue, idle movements
