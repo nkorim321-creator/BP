@@ -482,30 +482,23 @@
             return true;
         }
 
-        // Background: fast dispatch
-        async function backgroundFastClick(element) {
+        // Background: synchronous dispatch — কোনো setTimeout নেই, deep nesting নেই
+        function backgroundFastClick(element) {
             const rect = element.getBoundingClientRect();
             const targetX = rect.left + (rect.width * 0.2) + (Math.random() * rect.width * 0.6);
             const targetY = rect.top + (rect.height * 0.2) + (Math.random() * rect.height * 0.6);
 
             element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: targetX, clientY: targetY }));
             element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: targetX, clientY: targetY }));
-            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 30) + 20));
-
             element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: targetX, clientY: targetY }));
-            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 50) + 30));
-
             element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX, clientY: targetY }));
             element.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: targetX, clientY: targetY }));
 
-            if (element.parentElement) {
-                element.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: targetX, clientY: targetY }));
-            }
+            element.click();
+            if (element.parentElement) element.parentElement.click();
             let hiddenInput = element.querySelector('input');
-            if (hiddenInput) {
-                await new Promise(r => setTimeout(r, 20));
-                hiddenInput.click();
-            }
+            if (hiddenInput) hiddenInput.click();
+
             currentMousePos.x = targetX;
             currentMousePos.y = targetY;
         }
@@ -578,9 +571,13 @@
         // ==========================================
 
         function bgAwareSleep(foregroundMs) {
+            if (isTabReallyHidden()) {
+                // Background: 800ms দিলে browser 1s বানায় — perfectly human-like gap
+                // Promise.resolve() দিয়ে একটু DOM update-এর সুযোগ দেওয়া
+                return new Promise(resolve => setTimeout(resolve, 800));
+            }
             const fatigue = getFatigueFactor();
-            const ms = isTabReallyHidden() ? Math.min(foregroundMs, 200) : Math.floor(foregroundMs * fatigue);
-            return new Promise(resolve => setTimeout(resolve, ms));
+            return new Promise(resolve => setTimeout(resolve, Math.floor(foregroundMs * fatigue)));
         }
 
         const clamp = (v) => Math.max(0, Math.min(3, Math.round(Number(v) || 0)));
@@ -593,14 +590,14 @@
             data.trustworthy = clamp(data.trustworthy);
             data.attractive = clamp(data.attractive);
 
-            // "Image দেখে ভাবছে" — ২-৫ সেকেন্ড thinking time (fatigue সহ)
+            // Initial thinking delay — image দেখে ভাবছে
             const thinkingTime = isTabReallyHidden()
-                ? Math.floor(Math.random() * 500) + 300
+                ? 800
                 : Math.floor((Math.random() * 3000 + 2000) * getFatigueFactor());
 
+            // সব কিছু একটাই setTimeout-এর ভেতরে — flat structure, কোনো nested setTimeout নেই
             setTimeout(async () => {
                 try {
-                    // মাঝে মাঝে image-এর দিকে মাউস নাড়ায়
                     await randomIdleMovement();
 
                     let acceptText = data.acceptable ? "Yes" : "No";
@@ -625,7 +622,6 @@
                         localStorage.setItem('ben_hit_count', hitCount.toString());
                     }
 
-                    // Smart: "বুদ্ধিমান দেখাচ্ছে কিনা ভাবছে"
                     await bgAwareSleep(Math.floor(Math.random() * 1200) + 800);
                     await randomIdleMovement();
 
@@ -639,13 +635,11 @@
 
                     await clickScore('smart', data.smart);
 
-                    // Trustworthy: "বিশ্বাসযোগ্য কিনা ভাবছে"
                     await bgAwareSleep(Math.floor(Math.random() * 1500) + 1000);
                     await randomIdleMovement();
 
                     await clickScore('trustworthy', data.trustworthy);
 
-                    // Attractive: সাধারণত একটু বেশি সময় নেয়
                     await bgAwareSleep(Math.floor(Math.random() * 1800) + 1200);
                     await randomIdleMovement();
 
@@ -669,33 +663,29 @@
                         await bgAwareSleep(Math.floor(Math.random() * 800) + 400);
                     }
 
-                    // Submit আগে একটু "review" — ভাবছে সব ঠিক আছে কিনা
                     updateStatus("Reviewing before submit...");
                     await bgAwareSleep(Math.floor(Math.random() * 1500) + 800);
                     await randomIdleMovement();
 
-                    const submitDelay = isTabReallyHidden()
-                        ? Math.floor(Math.random() * 500) + 300
-                        : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor());
+                    // Submit — nested setTimeout বাদ, সরাসরি await
+                    await bgAwareSleep(isTabReallyHidden() ? 800 : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor()));
 
-                    setTimeout(async () => {
-                        try {
-                            sessionStorage.setItem('ben_just_submitted', 'true');
-                            sessionHITsDone++;
-                            sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
+                    try {
+                        sessionStorage.setItem('ben_just_submitted', 'true');
+                        sessionHITsDone++;
+                        sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
 
-                            let clickedSubmit = await forceClickExactText('Submit', 0);
-                            if (!clickedSubmit) {
-                                stopForManualAction("Submit button not found");
-                            } else {
-                                updateStatus("Submitted! ✅");
-                                setTimeout(() => { isProcessing = false; }, 2000);
-                            }
-                        } catch (submitErr) {
-                            console.error("Error clicking Submit:", submitErr);
-                            stopForManualAction("Submit Execution Failed");
+                        let clickedSubmit = await forceClickExactText('Submit', 0);
+                        if (!clickedSubmit) {
+                            stopForManualAction("Submit button not found");
+                        } else {
+                            updateStatus("Submitted! ✅");
+                            setTimeout(() => { isProcessing = false; }, 2000);
                         }
-                    }, submitDelay);
+                    } catch (submitErr) {
+                        console.error("Error clicking Submit:", submitErr);
+                        stopForManualAction("Submit Execution Failed");
+                    }
 
                 } catch (err) {
                     console.error("Error in form:", err);
