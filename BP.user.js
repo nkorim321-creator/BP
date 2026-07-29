@@ -250,21 +250,39 @@
             updateStatus(`Paused: ${reason}. Please manually Skip/Submit.`, true);
         }
 
-        function callGeminiAPI(modelName, payload) {
+        function callGeminiAPI(modelName, imageUrl, prompt) {
             return new Promise((resolve) => {
-                const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+                const API_URL = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
 
                 GM_xmlhttpRequest({
                     method: "POST",
                     url: API_URL,
-                    headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
-                    data: JSON.stringify(payload),
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${API_KEY}`
+                    },
+                    data: JSON.stringify({
+                        model: modelName,
+                        messages: [{
+                            role: "user",
+                            content: [
+                                { type: "text", text: prompt },
+                                { type: "image_url", image_url: { url: imageUrl } }
+                            ]
+                        }],
+                        response_format: { type: "json_object" },
+                        temperature: 0.9
+                    }),
                     timeout: 30000,
                     onload: (res) => {
                         try {
                             const responseJSON = JSON.parse(res.responseText);
-                            if (responseJSON.error) resolve({ success: false, model: modelName, error: responseJSON.error.message, raw: responseJSON });
-                            else resolve({ success: true, model: modelName, data: responseJSON });
+                            if (responseJSON.error) resolve({ success: false, model: modelName, error: responseJSON.error.message });
+                            else if (responseJSON.choices && responseJSON.choices[0] && responseJSON.choices[0].message) {
+                                resolve({ success: true, model: modelName, text: responseJSON.choices[0].message.content });
+                            } else {
+                                resolve({ success: false, model: modelName, error: "No content in response" });
+                            }
                         } catch (e) {
                             resolve({ success: false, model: modelName, error: "Parse Error" });
                         }
@@ -280,97 +298,44 @@
 
             const img = document.querySelector('.photo-container img, .rating-image img, img[src*="photofeeler"]')
                      || document.querySelector('img:not([src*=".svg"]):not([src*="chrome-extension"]):not([width="1"]):not([height="1"])');
-            if (!img) return;
+            if (!img || !img.src) return;
 
             isProcessing = true;
             updateStatus("Processing...");
-
-            const origSrc = img.src;
-
-            function canvasReadImage(targetImg) {
-                const canvas = document.createElement('canvas');
-                canvas.width = targetImg.naturalWidth || targetImg.width;
-                canvas.height = targetImg.naturalHeight || targetImg.height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(targetImg, 0, 0);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-                return dataUrl.split(',')[1];
-            }
-
-            let base64Image = null;
-            try {
-                base64Image = canvasReadImage(img);
-            } catch (e) {
-                await bgAwareSleep(logNormalDelay(800, 0.5));
-                base64Image = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: 'GET',
-                        url: origSrc,
-                        responseType: 'arraybuffer',
-                        timeout: 15000,
-                        onload: function(response) {
-                            if (response.status !== 200) { reject("Bad status"); return; }
-                            const bytes = new Uint8Array(response.response);
-                            let binary = '';
-                            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-                            resolve(btoa(binary));
-                        },
-                        onerror: () => reject("Network Error"),
-                        ontimeout: () => reject("Timeout")
-                    });
-                }).catch(err => { stopForManualAction("Image Load Error"); return null; });
-            }
-
-            if (base64Image) {
-                updateStatus("Calling AI...");
-                await getRatingFromGemini(base64Image, 1);
-            }
+            updateStatus("Calling AI...");
+            await getRatingFromGemini(img.src, 1);
         }
 
-        async function getRatingFromGemini(base64Image, retryCount) {
-            const payload = {
-                contents: [{
-                    parts: [
-                        { text: `Rate this dating photo. Return ONLY valid JSON with these fields: acceptable (boolean - false ONLY if no real person visible or it's a meme/screenshot), smart (0-3), trustworthy (0-3), attractive (0-3), note (string). Rating guide: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and strict, use 0 and 1 often. NEVER give all same scores. The "note" MUST describe what you actually see in THIS specific photo - mention specific visible details like their smile, eyes, outfit, background, lighting, pose, hair, glasses, etc. Keep it casual and short (2-5 words). Examples of GOOD notes: "love the outdoor bg", "nice smile tho", "cool jacket", "great lighting here", "eyes look kind". Examples of BAD notes (too generic, NEVER use these): "nice", "good photo", "looks good", "great pic".` },
-                        { inline_data: { mime_type: "image/jpeg", data: base64Image } }
-                    ]
-                }],
-                safetySettings: [
-                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-                ],
-                generationConfig: { responseMimeType: "application/json", temperature: 0.9 }
-            };
+        async function getRatingFromGemini(imageUrl, retryCount) {
+            const prompt = `Rate this dating photo. Return ONLY valid JSON with these fields: acceptable (boolean - false ONLY if no real person visible or it's a meme/screenshot), smart (0-3), trustworthy (0-3), attractive (0-3), note (string). Rating guide: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and strict, use 0 and 1 often. NEVER give all same scores. The "note" MUST describe what you actually see in THIS specific photo - mention specific visible details like their smile, eyes, outfit, background, lighting, pose, hair, glasses, etc. Keep it casual and short (2-5 words). Examples of GOOD notes: "love the outdoor bg", "nice smile tho", "cool jacket", "great lighting here", "eyes look kind". Examples of BAD notes (too generic, NEVER use these): "nice", "good photo", "looks good", "great pic".`;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
                 updateStatus(`Trying 3.1-flash-lite (Attempt ${attempt}/2)...`);
-                const result = await callGeminiAPI("gemini-3.1-flash-lite", payload);
+                const result = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt);
 
-                if (result.success && result.data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                if (result.success && result.text) {
                     try {
-                        let cleanText = result.data.candidates[0].content.parts[0].text.replace(/```json/gi, '').replace(/```/g, '').trim();
+                        let cleanText = result.text.replace(/```json/gi, '').replace(/```/g, '').trim();
                         let parsedData = JSON.parse(cleanText);
                         updateMetrics(parsedData);
                         applyToForm(parsedData);
                         return;
-                    } catch (e) { console.error("Parse error", e); }
+                    } catch (e) {}
                 }
                 if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
             }
 
             updateStatus("Fallback to 3.5-flash...");
-            const backupResult = await callGeminiAPI("gemini-3.5-flash", payload);
+            const backupResult = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt);
 
-            if (backupResult.success && backupResult.data.candidates?.[0]?.content?.parts?.[0]?.text) {
+            if (backupResult.success && backupResult.text) {
                 try {
-                    let cleanText = backupResult.data.candidates[0].content.parts[0].text.replace(/```json/gi, '').replace(/```/g, '').trim();
+                    let cleanText = backupResult.text.replace(/```json/gi, '').replace(/```/g, '').trim();
                     let parsedData = JSON.parse(cleanText);
                     updateMetrics(parsedData);
                     applyToForm(parsedData);
                     return;
-                } catch (e) { console.error("Parse error", e); }
+                } catch (e) {}
             }
 
             stopForManualAction("API Error - Could not get valid rating");
