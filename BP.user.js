@@ -132,13 +132,13 @@
 
             const seed = Math.random;
             personality = {
-                ratingBias: { smart: (seed() - 0.5) * 1.2, trustworthy: (seed() - 0.5) * 1.2, attractive: (seed() - 0.5) * 1.2 },
+                ratingBias: { smart: (seed() - 0.5) * 0.5, trustworthy: (seed() - 0.5) * 0.5, attractive: (seed() - 0.5) * 0.5 },
                 speedProfile: ['slow', 'medium', 'fast'][Math.floor(seed() * 3)],
                 speedMultiplier: 0.7 + seed() * 1.1,
                 correctionRate: 0.03 + seed() * 0.12,
                 distractionRate: 0.02 + seed() * 0.06,
                 noteStyle: ['minimal', 'short', 'medium'][Math.floor(seed() * 3)],
-                harshness: -0.3 + seed() * 0.6,
+                harshness: -0.15 + seed() * 0.3,
                 traitOrder: seed() < 0.15 ? 'shuffled' : 'normal',
                 skipRate: 0.005 + seed() * 0.025,
                 created: Date.now()
@@ -159,14 +159,10 @@
 
         function applyRatingNoise(score, traitBias) {
             const combined = traitBias + personality.harshness;
-            const roll = Math.random();
             let noised = score;
 
-            if (roll < Math.abs(combined) * 0.3) {
+            if (Math.random() < Math.abs(combined) * 0.15) {
                 noised += combined > 0 ? 1 : -1;
-            }
-            if (Math.random() < 0.08) {
-                noised += Math.random() < 0.5 ? 1 : -1;
             }
 
             return Math.max(0, Math.min(3, Math.round(noised)));
