@@ -652,6 +652,14 @@
             data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy);
             data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive);
 
+            const metricsEl = document.getElementById('dash-metrics');
+            if (metricsEl) {
+                const rows = metricsEl.querySelectorAll('.dash-row');
+                if (rows[2]) rows[2].querySelector('.dash-val').textContent = data.smart;
+                if (rows[3]) rows[3].querySelector('.dash-val').textContent = data.trustworthy;
+                if (rows[4]) rows[4].querySelector('.dash-val').textContent = data.attractive;
+            }
+
             if (data.acceptable && Math.random() < personality.skipRate) {
                 updateStatus("Skipping this one (natural skip)...");
                 setTimeout(async () => {
