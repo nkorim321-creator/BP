@@ -293,30 +293,37 @@
                 canvas.height = targetImg.naturalHeight || targetImg.height;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(targetImg, 0, 0);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
                 return dataUrl.split(',')[1];
             }
 
+            let base64Image = null;
             try {
-                const base64Image = canvasReadImage(img);
+                base64Image = canvasReadImage(img);
+            } catch (e) {
+                await bgAwareSleep(logNormalDelay(800, 0.5));
+                base64Image = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: origSrc,
+                        responseType: 'arraybuffer',
+                        timeout: 15000,
+                        onload: function(response) {
+                            if (response.status !== 200) { reject("Bad status"); return; }
+                            const bytes = new Uint8Array(response.response);
+                            let binary = '';
+                            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+                            resolve(btoa(binary));
+                        },
+                        onerror: () => reject("Network Error"),
+                        ontimeout: () => reject("Timeout")
+                    });
+                }).catch(err => { stopForManualAction("Image Load Error"); return null; });
+            }
+
+            if (base64Image) {
                 updateStatus("Calling AI...");
                 await getRatingFromGemini(base64Image, 1);
-            } catch (e) {
-                const reloadImg = new Image();
-                reloadImg.crossOrigin = 'anonymous';
-                reloadImg.onload = async function() {
-                    try {
-                        const base64Image = canvasReadImage(reloadImg);
-                        updateStatus("Calling AI...");
-                        await getRatingFromGemini(base64Image, 1);
-                    } catch (err2) {
-                        stopForManualAction("Image Processing Failed");
-                    }
-                };
-                reloadImg.onerror = function() {
-                    stopForManualAction("Image Load Error");
-                };
-                reloadImg.src = origSrc;
             }
         }
 
