@@ -193,7 +193,6 @@
                     box-shadow: 0 4px 12px rgba(0,0,0,0.5);
                     z-index: 999999; pointer-events: none;
                 }
-                .dash-title { color: #38bdf8; font-weight: bold; border-bottom: 1px solid #334155; padding-bottom: 6px; margin-bottom: 8px; }
                 .dash-row { margin-bottom: 4px; }
                 .dash-label { color: #94a3b8; }
                 .dash-val { color: #fde047; font-weight: bold; }
@@ -205,7 +204,6 @@
             const dash = document.createElement('div');
             dash.id = 'ben-ai-dash';
             dash.innerHTML = `
-                <div class="dash-title">🤖 AI Rater v27.0</div>
                 <div id="dash-metrics">
                     <div class="dash-row"><span class="dash-label">Status:</span> <span class="dash-val">Ready</span></div>
                 </div>
@@ -223,17 +221,15 @@
             console.log(isError ? `🚨 ${text}` : `ℹ️ ${text}`);
         }
 
-        function updateMetrics(data, modelName) {
+        function updateMetrics(data) {
             const el = document.getElementById('dash-metrics');
             if (el) {
                 el.innerHTML = `
-                    <div class="dash-row"><span class="dash-label">Model:</span> <span style="color:#6ee7b7">${modelName.replace('gemini-', '')}</span></div>
-                    <div class="dash-row"><span class="dash-label">Accept:</span> <span class="dash-val">${data.acceptable ? 'Yes ✅' : 'No ❌'}</span></div>
+                    <div class="dash-row"><span class="dash-label">Accept:</span> <span class="dash-val">${data.acceptable ? 'Yes' : 'No'}</span></div>
                     <div class="dash-row"><span class="dash-label">Smart:</span> <span class="dash-val">${data.smart}</span></div>
                     <div class="dash-row"><span class="dash-label">Trust:</span> <span class="dash-val">${data.trustworthy}</span></div>
                     <div class="dash-row"><span class="dash-label">Attract:</span> <span class="dash-val">${data.attractive}</span></div>
                     <div class="dash-row"><span class="dash-label">Note:</span> <span style="color:#cbd5e1">"${data.note || 'None'}"</span></div>
-                    <div class="dash-row"><span class="dash-label">Fatigue:</span> <span style="color:#c084fc">${(getFatigueFactor()).toFixed(2)}x</span></div>
                 `;
             }
         }
@@ -287,60 +283,66 @@
             if (!img) return;
 
             isProcessing = true;
-            updateStatus("Downloading & compressing image...");
+            updateStatus("Reading image...");
 
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: img.src,
-                responseType: 'blob',
-                timeout: 15000,
-                onload: function(response) {
-                    if (response.status !== 200) { stopForManualAction("Broken Image Link"); return; }
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || img.width;
+                canvas.height = img.naturalHeight || img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
 
-                    const urlCreator = window.URL || window.webkitURL;
-                    const imageUrl = urlCreator.createObjectURL(response.response);
-                    const imgObj = new Image();
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                const base64Image = dataUrl.split(',')[1];
 
-                    imgObj.onload = async function() {
-                        try {
-                            const canvas = document.createElement('canvas');
-                            const MAX_WIDTH = 375;
-                            const MAX_HEIGHT = 375;
-                            let width = imgObj.width;
-                            let height = imgObj.height;
+                updateStatus("Calling AI...");
+                await getRatingFromGemini(base64Image, 1);
+            } catch (canvasErr) {
+                updateStatus("Direct read failed, trying download...");
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: img.src,
+                    responseType: 'blob',
+                    timeout: 15000,
+                    onload: function(response) {
+                        if (response.status !== 200) { stopForManualAction("Broken Image Link"); return; }
 
-                            if (width > height) {
-                                if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
-                            } else {
-                                if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+                        const urlCreator = window.URL || window.webkitURL;
+                        const imageUrl = urlCreator.createObjectURL(response.response);
+                        const imgObj = new Image();
+                        imgObj.crossOrigin = 'anonymous';
+
+                        imgObj.onload = async function() {
+                            try {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = imgObj.naturalWidth;
+                                canvas.height = imgObj.naturalHeight;
+                                const ctx = canvas.getContext('2d');
+                                ctx.drawImage(imgObj, 0, 0);
+
+                                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                                const base64Image = dataUrl.split(',')[1];
+                                urlCreator.revokeObjectURL(imageUrl);
+
+                                updateStatus("Calling AI...");
+                                await getRatingFromGemini(base64Image, 1);
+                            } catch (err) {
+                                urlCreator.revokeObjectURL(imageUrl);
+                                stopForManualAction("Image Processing Failed");
                             }
+                        };
 
-                            canvas.width = width; canvas.height = height;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(imgObj, 0, 0, width, height);
-
-                            const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-                            const base64Image = dataUrl.split(',')[1];
+                        imgObj.onerror = function() {
                             urlCreator.revokeObjectURL(imageUrl);
+                            stopForManualAction("Image Format Error");
+                        };
 
-                            updateStatus("Calling AI...");
-                            await getRatingFromGemini(base64Image, 1);
-                        } catch (canvasErr) {
-                            urlCreator.revokeObjectURL(imageUrl);
-                            stopForManualAction("Image Compression Failed");
-                        }
-                    };
-
-                    imgObj.onerror = function() {
-                        urlCreator.revokeObjectURL(imageUrl);
-                        stopForManualAction("Image Format Error");
-                    };
-
-                    imgObj.src = imageUrl;
-                },
-                onerror: function() { stopForManualAction("Network Error"); },
-                ontimeout: function() { stopForManualAction("Timeout downloading image"); }
-            });
+                        imgObj.src = imageUrl;
+                    },
+                    onerror: function() { stopForManualAction("Network Error"); },
+                    ontimeout: function() { stopForManualAction("Timeout downloading image"); }
+                });
+            }
         }
 
         async function getRatingFromGemini(base64Image, retryCount) {
@@ -368,7 +370,7 @@
                     try {
                         let cleanText = result.data.candidates[0].content.parts[0].text.replace(/```json/gi, '').replace(/```/g, '').trim();
                         let parsedData = JSON.parse(cleanText);
-                        updateMetrics(parsedData, "gemini-3.1-flash-lite");
+                        updateMetrics(parsedData);
                         applyToForm(parsedData);
                         return;
                     } catch (e) { console.error("Parse error", e); }
@@ -383,7 +385,7 @@
                 try {
                     let cleanText = backupResult.data.candidates[0].content.parts[0].text.replace(/```json/gi, '').replace(/```/g, '').trim();
                     let parsedData = JSON.parse(cleanText);
-                    updateMetrics(parsedData, "gemini-3.5-flash");
+                    updateMetrics(parsedData);
                     applyToForm(parsedData);
                     return;
                 } catch (e) { console.error("Parse error", e); }
@@ -594,11 +596,11 @@
 
                 textarea.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
 
-                let delay = Math.floor(Math.random() * 150) + 90;
+                let delay = Math.floor(Math.random() * 200) + 130;
 
-                if (char === ' ') delay += Math.floor(Math.random() * 250) + 100;
+                if (char === ' ') delay += Math.floor(Math.random() * 400) + 150;
 
-                if (Math.random() < 0.12) delay += Math.floor(Math.random() * 600) + 200;
+                if (Math.random() < 0.15) delay += Math.floor(Math.random() * 800) + 300;
 
                 await new Promise(r => setTimeout(r, delay));
             }
@@ -632,9 +634,9 @@
             const metricsEl = document.getElementById('dash-metrics');
             if (metricsEl) {
                 const rows = metricsEl.querySelectorAll('.dash-row');
-                if (rows[2]) rows[2].querySelector('.dash-val').textContent = data.smart;
-                if (rows[3]) rows[3].querySelector('.dash-val').textContent = data.trustworthy;
-                if (rows[4]) rows[4].querySelector('.dash-val').textContent = data.attractive;
+                if (rows[1]) rows[1].querySelector('.dash-val').textContent = data.smart;
+                if (rows[2]) rows[2].querySelector('.dash-val').textContent = data.trustworthy;
+                if (rows[3]) rows[3].querySelector('.dash-val').textContent = data.attractive;
             }
 
             if (data.acceptable && Math.random() < personality.skipRate) {
