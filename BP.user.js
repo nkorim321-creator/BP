@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater (Version 26.0 - Anti-Detection)
+// @name         MTurk Human-Like Rater (Version 27.0 - Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      26.0
-// @description  Per-worker personality, rating noise, log-normal timing, correction simulation, distraction pauses
+// @version      27.0
+// @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
 // @match        *://*.photofeeler.com/*
@@ -205,9 +205,9 @@
             const dash = document.createElement('div');
             dash.id = 'ben-ai-dash';
             dash.innerHTML = `
-                <div class="dash-title">🤖 AI Rater v26.0</div>
+                <div class="dash-title">🤖 AI Rater v27.0</div>
                 <div id="dash-metrics">
-                    <div class="dash-row"><span class="dash-label">Target HITs:</span> <span class="dash-val" id="d-hit">Loading...</span></div>
+                    <div class="dash-row"><span class="dash-label">Status:</span> <span class="dash-val">Ready</span></div>
                 </div>
                 <div id="dash-status" class="dash-status">Waiting for image...</div>
             `;
@@ -246,16 +246,6 @@
         });
 
         const tabId = sessionStorage.getItem('ben_tab_id') || 'default';
-        let hitCount = parseInt(localStorage.getItem('ben_hit_count_' + tabId) || '0');
-        let nextTarget = parseInt(localStorage.getItem('ben_note_target_' + tabId) || '0');
-
-        if (nextTarget === 0) {
-            nextTarget = Math.floor(Math.random() * (20 - 5 + 1)) + 5;
-            localStorage.setItem('ben_note_target_' + tabId, nextTarget.toString());
-        }
-
-        const hitDisplay = document.getElementById('d-hit');
-        if (hitDisplay) hitDisplay.innerText = `${hitCount + 1} / ${nextTarget}`;
 
         let isProcessing = false;
 
@@ -354,32 +344,10 @@
         }
 
         async function getRatingFromGemini(base64Image, retryCount) {
-            const noteExamples = {
-                minimal: [
-                    '"nice", "cool", "ok pic", "good", "decent"',
-                    '"yep", "looks fine", "sure", "not bad"',
-                    '"solid", "works", "clean", "alright"'
-                ],
-                short: [
-                    '"nice smile", "good look", "cool vibe", "solid pic"',
-                    '"looks chill", "good one", "nice photo", "pretty good"',
-                    '"looks confident", "decent pic", "friendly face"'
-                ],
-                medium: [
-                    '"u look pretty good ngl", "nice pic good vibes", "solid photo looks friendly"',
-                    '"great pic very approachable", "looking good nice background", "cool shot u seem fun"',
-                    '"good photo nice smile there", "looks trustworthy n smart", "prety nice overall tbh"'
-                ]
-            };
-            const examples = noteExamples[personality.noteStyle] || noteExamples.short;
-            const exampleSet = examples[Math.floor(Math.random() * examples.length)];
-            const wordCounts = { minimal: '1-2', short: '2-4', medium: '4-8' };
-            const wc = wordCounts[personality.noteStyle] || '2-4';
-
             const payload = {
                 contents: [{
                     parts: [
-                        { text: `Rate dating photo. AVOID BOT BEHAVIOR. 1. NEVER give same scores (e.g. 3,3,3). 2. Rate 0-3 separately per trait. Be strict, use 0/1 often. 3. Return ONLY JSON: acceptable (bool, false if meme/no person), smart (0-3), trustworthy (0-3), attractive (0-3). 5. "note": casual ${wc} word comment like ${exampleSet}. NEVER repeat previous notes.` },
+                        { text: `Rate this dating photo. Return ONLY valid JSON with these fields: acceptable (boolean - false ONLY if no real person visible or it's a meme/screenshot), smart (0-3), trustworthy (0-3), attractive (0-3), note (string). Rating guide: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and strict, use 0 and 1 often. NEVER give all same scores. The "note" MUST describe what you actually see in THIS specific photo - mention specific visible details like their smile, eyes, outfit, background, lighting, pose, hair, glasses, etc. Keep it casual and short (2-5 words). Examples of GOOD notes: "love the outdoor bg", "nice smile tho", "cool jacket", "great lighting here", "eyes look kind". Examples of BAD notes (too generic, NEVER use these): "nice", "good photo", "looks good", "great pic".` },
                         { inline_data: { mime_type: "image/jpeg", data: base64Image } }
                     ]
                 }],
@@ -389,7 +357,7 @@
                     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
                 ],
-                generationConfig: { responseMimeType: "application/json", temperature: 0.95 }
+                generationConfig: { responseMimeType: "application/json", temperature: 0.9 }
             };
 
             for (let attempt = 1; attempt <= 2; attempt++) {
@@ -626,14 +594,11 @@
 
                 textarea.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
 
-                // Variable typing speed: 55-110 WPM equivalent
-                let delay = Math.floor(Math.random() * 80) + 45;
+                let delay = Math.floor(Math.random() * 150) + 90;
 
-                // Space-এর পর একটু বেশি pause — word gap
-                if (char === ' ') delay += Math.floor(Math.random() * 120) + 40;
+                if (char === ' ') delay += Math.floor(Math.random() * 250) + 100;
 
-                // মাঝে মাঝে "thinking pause" — কী লিখব ভাবছে
-                if (Math.random() < 0.08) delay += Math.floor(Math.random() * 350) + 100;
+                if (Math.random() < 0.12) delay += Math.floor(Math.random() * 600) + 200;
 
                 await new Promise(r => setTimeout(r, delay));
             }
@@ -708,17 +673,6 @@
                         return;
                     }
 
-                    hitCount++;
-                    let writeNoteThisTime = false;
-                    if (hitCount >= nextTarget) {
-                        writeNoteThisTime = true;
-                        hitCount = 0;
-                        nextTarget = Math.floor(Math.random() * (20 - 5 + 1)) + 5;
-                        localStorage.setItem('ben_hit_count_' + tabId, '0');
-                        localStorage.setItem('ben_note_target_' + tabId, nextTarget.toString());
-                    } else {
-                        localStorage.setItem('ben_hit_count_' + tabId, hitCount.toString());
-                    }
 
                     await bgAwareSleep(logNormalDelay(1500, 0.5));
                     await randomIdleMovement();
@@ -771,12 +725,12 @@
                         return el.textContent.replace(/\s+/g, ' ').trim() === 'Skip';
                     }).filter((el, index, arr) => !arr.some(otherEl => el !== otherEl && el.contains(otherEl))).length > 0;
 
-                    if (writeNoteThisTime || skipExists) {
+                    if (skipExists) {
                         updateStatus("Writing comment...");
-                        let fallbackNote = (data.note && typeof data.note === 'string' && data.note.trim() !== "") ? data.note : "nice";
+                        let note = (data.note && typeof data.note === 'string' && data.note.trim().length > 3) ? data.note : "nice smile";
                         let textarea = document.querySelector('textarea');
                         if (textarea) {
-                            await simulateHumanTyping(textarea, fallbackNote);
+                            await simulateHumanTyping(textarea, note);
                         }
                         await bgAwareSleep(logNormalDelay(600, 0.4));
                     }
