@@ -285,48 +285,39 @@
             isProcessing = true;
             updateStatus("Processing...");
 
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: img.src,
-                responseType: 'blob',
-                timeout: 15000,
-                onload: function(response) {
-                    if (response.status !== 200) { stopForManualAction("Broken Image Link"); return; }
+            const origSrc = img.src;
 
-                    const urlCreator = window.URL || window.webkitURL;
-                    const imageUrl = urlCreator.createObjectURL(response.response);
-                    const imgObj = new Image();
+            function canvasReadImage(targetImg) {
+                const canvas = document.createElement('canvas');
+                canvas.width = targetImg.naturalWidth || targetImg.width;
+                canvas.height = targetImg.naturalHeight || targetImg.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(targetImg, 0, 0);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                return dataUrl.split(',')[1];
+            }
 
-                    imgObj.onload = async function() {
-                        try {
-                            const canvas = document.createElement('canvas');
-                            canvas.width = imgObj.naturalWidth;
-                            canvas.height = imgObj.naturalHeight;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(imgObj, 0, 0);
-
-                            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                            const base64Image = dataUrl.split(',')[1];
-                            urlCreator.revokeObjectURL(imageUrl);
-
-                            updateStatus("Calling AI...");
-                            await getRatingFromGemini(base64Image, 1);
-                        } catch (err) {
-                            urlCreator.revokeObjectURL(imageUrl);
-                            stopForManualAction("Image Processing Failed");
-                        }
-                    };
-
-                    imgObj.onerror = function() {
-                        urlCreator.revokeObjectURL(imageUrl);
-                        stopForManualAction("Image Format Error");
-                    };
-
-                    imgObj.src = imageUrl;
-                },
-                onerror: function() { stopForManualAction("Network Error"); },
-                ontimeout: function() { stopForManualAction("Timeout downloading image"); }
-            });
+            try {
+                const base64Image = canvasReadImage(img);
+                updateStatus("Calling AI...");
+                await getRatingFromGemini(base64Image, 1);
+            } catch (e) {
+                const reloadImg = new Image();
+                reloadImg.crossOrigin = 'anonymous';
+                reloadImg.onload = async function() {
+                    try {
+                        const base64Image = canvasReadImage(reloadImg);
+                        updateStatus("Calling AI...");
+                        await getRatingFromGemini(base64Image, 1);
+                    } catch (err2) {
+                        stopForManualAction("Image Processing Failed");
+                    }
+                };
+                reloadImg.onerror = function() {
+                    stopForManualAction("Image Load Error");
+                };
+                reloadImg.src = origSrc;
+            }
         }
 
         async function getRatingFromGemini(base64Image, retryCount) {
