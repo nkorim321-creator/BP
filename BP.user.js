@@ -245,12 +245,13 @@
             if (dash && dash.parentNode) dash.parentNode.removeChild(dash);
         });
 
-        let hitCount = parseInt(localStorage.getItem('ben_hit_count') || '0');
-        let nextTarget = parseInt(localStorage.getItem('ben_note_target') || '0');
+        const tabId = sessionStorage.getItem('ben_tab_id') || 'default';
+        let hitCount = parseInt(localStorage.getItem('ben_hit_count_' + tabId) || '0');
+        let nextTarget = parseInt(localStorage.getItem('ben_note_target_' + tabId) || '0');
 
         if (nextTarget === 0) {
-            nextTarget = Math.floor(Math.random() * (15 - 6 + 1)) + 6;
-            localStorage.setItem('ben_note_target', nextTarget.toString());
+            nextTarget = Math.floor(Math.random() * (20 - 5 + 1)) + 5;
+            localStorage.setItem('ben_note_target_' + tabId, nextTarget.toString());
         }
 
         const hitDisplay = document.getElementById('d-hit');
@@ -353,17 +354,32 @@
         }
 
         async function getRatingFromGemini(base64Image, retryCount) {
-            const noteInstructions = {
-                minimal: 'note: 1-2 casual words like "nice", "cool pic", "looks good", "ok"',
-                short: 'note: 2-4 casual words like "nice smile", "good photo", "looks friendly"',
-                medium: 'note: 4-8 casual words, can have typos like "prety good pic u look nice"'
+            const noteExamples = {
+                minimal: [
+                    '"nice", "cool", "ok pic", "good", "decent"',
+                    '"yep", "looks fine", "sure", "not bad"',
+                    '"solid", "works", "clean", "alright"'
+                ],
+                short: [
+                    '"nice smile", "good look", "cool vibe", "solid pic"',
+                    '"looks chill", "good one", "nice photo", "pretty good"',
+                    '"looks confident", "decent pic", "friendly face"'
+                ],
+                medium: [
+                    '"u look pretty good ngl", "nice pic good vibes", "solid photo looks friendly"',
+                    '"great pic very approachable", "looking good nice background", "cool shot u seem fun"',
+                    '"good photo nice smile there", "looks trustworthy n smart", "prety nice overall tbh"'
+                ]
             };
-            const noteStyle = noteInstructions[personality.noteStyle] || noteInstructions.short;
+            const examples = noteExamples[personality.noteStyle] || noteExamples.short;
+            const exampleSet = examples[Math.floor(Math.random() * examples.length)];
+            const wordCounts = { minimal: '1-2', short: '2-4', medium: '4-8' };
+            const wc = wordCounts[personality.noteStyle] || '2-4';
 
             const payload = {
                 contents: [{
                     parts: [
-                        { text: `Rate dating photo. AVOID BOT BEHAVIOR. 1. NEVER give same scores (e.g. 3,3,3). 2. Rate 0-3 separately per trait. Be strict, use 0/1 often. 3. Return ONLY JSON: acceptable (bool, false if meme/no person), smart (0-3), trustworthy (0-3), attractive (0-3). 5. "${noteStyle}".` },
+                        { text: `Rate dating photo. AVOID BOT BEHAVIOR. 1. NEVER give same scores (e.g. 3,3,3). 2. Rate 0-3 separately per trait. Be strict, use 0/1 often. 3. Return ONLY JSON: acceptable (bool, false if meme/no person), smart (0-3), trustworthy (0-3), attractive (0-3). 5. "note": casual ${wc} word comment like ${exampleSet}. NEVER repeat previous notes.` },
                         { inline_data: { mime_type: "image/jpeg", data: base64Image } }
                     ]
                 }],
@@ -373,7 +389,7 @@
                     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
                 ],
-                generationConfig: { responseMimeType: "application/json", temperature: 0.85 }
+                generationConfig: { responseMimeType: "application/json", temperature: 0.95 }
             };
 
             for (let attempt = 1; attempt <= 2; attempt++) {
@@ -696,10 +712,12 @@
                     let writeNoteThisTime = false;
                     if (hitCount >= nextTarget) {
                         writeNoteThisTime = true;
-                        localStorage.setItem('ben_hit_count', '0');
-                        localStorage.setItem('ben_note_target', '0');
+                        hitCount = 0;
+                        nextTarget = Math.floor(Math.random() * (20 - 5 + 1)) + 5;
+                        localStorage.setItem('ben_hit_count_' + tabId, '0');
+                        localStorage.setItem('ben_note_target_' + tabId, nextTarget.toString());
                     } else {
-                        localStorage.setItem('ben_hit_count', hitCount.toString());
+                        localStorage.setItem('ben_hit_count_' + tabId, hitCount.toString());
                     }
 
                     await bgAwareSleep(logNormalDelay(1500, 0.5));
