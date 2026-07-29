@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater V25 Human
+// @name         MTurk Human-Like Rater (Version 26.0 - Anti-Detection)
 // @namespace    http://tampermonkey.net/
-// @version      25.0
-// @description  Bezier mouse curves, character typing, thinking delays, scroll, fatigue, idle movements
+// @version      26.0
+// @description  Per-worker personality, rating noise, log-normal timing, correction simulation, distraction pauses
 // @author       You
 // @match        *://worker.mturk.com/*
 // @match        *://*.photofeeler.com/*
@@ -116,6 +116,62 @@
 
         const MODELS_TO_TEST = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
 
+        // --- Worker Personality System ---
+        // প্রতিটা MTurk worker ID-র জন্য unique "personality" তৈরি করে store করে
+        // এতে cross-account correlation ধরা যায় না
+        function getWorkerPersonality() {
+            const workerIdEl = document.querySelector('[data-worker-id], .worker-id');
+            const tabId = sessionStorage.getItem('ben_tab_id') || (Math.random().toString(36).slice(2, 10));
+            sessionStorage.setItem('ben_tab_id', tabId);
+            const personalityKey = 'ben_personality_' + tabId;
+
+            let personality = GM_getValue(personalityKey, null);
+            if (personality) {
+                try { return JSON.parse(personality); } catch(e) {}
+            }
+
+            const seed = Math.random;
+            personality = {
+                ratingBias: { smart: (seed() - 0.5) * 1.2, trustworthy: (seed() - 0.5) * 1.2, attractive: (seed() - 0.5) * 1.2 },
+                speedProfile: ['slow', 'medium', 'fast'][Math.floor(seed() * 3)],
+                speedMultiplier: 0.7 + seed() * 1.1,
+                correctionRate: 0.03 + seed() * 0.12,
+                distractionRate: 0.02 + seed() * 0.06,
+                noteStyle: ['minimal', 'short', 'medium'][Math.floor(seed() * 3)],
+                harshness: -0.3 + seed() * 0.6,
+                traitOrder: seed() < 0.15 ? 'shuffled' : 'normal',
+                skipRate: 0.005 + seed() * 0.025,
+                created: Date.now()
+            };
+
+            GM_setValue(personalityKey, JSON.stringify(personality));
+            return personality;
+        }
+
+        const personality = getWorkerPersonality();
+
+        function logNormalDelay(median, sigma) {
+            const u1 = Math.random();
+            const u2 = Math.random();
+            const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            return Math.floor(Math.max(median * 0.3, median * Math.exp(sigma * z)));
+        }
+
+        function applyRatingNoise(score, traitBias) {
+            const combined = traitBias + personality.harshness;
+            const roll = Math.random();
+            let noised = score;
+
+            if (roll < Math.abs(combined) * 0.3) {
+                noised += combined > 0 ? 1 : -1;
+            }
+            if (Math.random() < 0.08) {
+                noised += Math.random() < 0.5 ? 1 : -1;
+            }
+
+            return Math.max(0, Math.min(3, Math.round(noised)));
+        }
+
         // --- Session Fatigue: HIT বাড়লে delay বাড়ে ---
         const sessionStartTime = Date.now();
         let sessionHITsDone = parseInt(sessionStorage.getItem('ben_session_hits') || '0');
@@ -124,7 +180,7 @@
             const minutesWorking = (Date.now() - sessionStartTime) / 60000;
             const hitFatigue = Math.min(sessionHITsDone * 0.03, 0.5);
             const timeFatigue = Math.min(minutesWorking * 0.005, 0.3);
-            return 1 + hitFatigue + timeFatigue;
+            return (1 + hitFatigue + timeFatigue) * personality.speedMultiplier;
         }
 
         // --- UI Dashboard ---
@@ -153,7 +209,7 @@
             const dash = document.createElement('div');
             dash.id = 'ben-ai-dash';
             dash.innerHTML = `
-                <div class="dash-title">🤖 AI Rater v25.0</div>
+                <div class="dash-title">🤖 AI Rater v26.0</div>
                 <div id="dash-metrics">
                     <div class="dash-row"><span class="dash-label">Target HITs:</span> <span class="dash-val" id="d-hit">Loading...</span></div>
                 </div>
@@ -301,10 +357,17 @@
         }
 
         async function getRatingFromGemini(base64Image, retryCount) {
+            const noteInstructions = {
+                minimal: 'note: 1-2 casual words like "nice", "cool pic", "looks good", "ok"',
+                short: 'note: 2-4 casual words like "nice smile", "good photo", "looks friendly"',
+                medium: 'note: 4-8 casual words, can have typos like "prety good pic u look nice"'
+            };
+            const noteStyle = noteInstructions[personality.noteStyle] || noteInstructions.short;
+
             const payload = {
                 contents: [{
                     parts: [
-                        { text: `Rate dating photo. AVOID BOT BEHAVIOR. 1. NEVER give same scores (e.g. 3,3,3). 2. Rate 0-3 separately per trait. Be strict, use 0/1 often. 3. Return ONLY JSON: acceptable (bool, false if meme/no person), smart (0-3), trustworthy (0-3), attractive (0-3). 5. "note": string (ALWAYS write a very short, realistic 1 to 3 word compliment just in case it's needed).` },
+                        { text: `Rate dating photo. AVOID BOT BEHAVIOR. 1. NEVER give same scores (e.g. 3,3,3). 2. Rate 0-3 separately per trait. Be strict, use 0/1 often. 3. Return ONLY JSON: acceptable (bool, false if meme/no person), smart (0-3), trustworthy (0-3), attractive (0-3). 5. "${noteStyle}".` },
                         { inline_data: { mime_type: "image/jpeg", data: base64Image } }
                     ]
                 }],
@@ -314,7 +377,7 @@
                     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
                 ],
-                generationConfig: { responseMimeType: "application/json", temperature: 0.7 }
+                generationConfig: { responseMimeType: "application/json", temperature: 0.85 }
             };
 
             for (let attempt = 1; attempt <= 2; attempt++) {
@@ -585,17 +648,32 @@
             updateStatus("Studying the photo...");
 
             data.acceptable = (data.acceptable === true || data.acceptable === "true");
-            data.smart = clamp(data.smart);
-            data.trustworthy = clamp(data.trustworthy);
-            data.attractive = clamp(data.attractive);
+            data.smart = applyRatingNoise(clamp(data.smart), personality.ratingBias.smart);
+            data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy);
+            data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive);
+
+            if (data.acceptable && Math.random() < personality.skipRate) {
+                updateStatus("Skipping this one (natural skip)...");
+                setTimeout(async () => {
+                    let clicked = await forceClickExactText('Skip', 0);
+                    if (!clicked) clicked = await forceClickExactText('Submit', 0);
+                    isProcessing = false;
+                }, logNormalDelay(2000, 0.5));
+                return;
+            }
 
             const thinkingTime = isTabReallyHidden()
-                ? Math.floor(Math.random() * 1500) + 800
-                : Math.floor((Math.random() * 3000 + 2000) * getFatigueFactor());
+                ? logNormalDelay(1200, 0.6)
+                : logNormalDelay(3000 * getFatigueFactor(), 0.4);
 
-            // সব কিছু একটাই setTimeout-এর ভেতরে — flat structure, কোনো nested setTimeout নেই
             setTimeout(async () => {
                 try {
+                    if (Math.random() < personality.distractionRate) {
+                        const distractMs = Math.floor(Math.random() * 70000) + 20000;
+                        updateStatus("(distracted pause)...");
+                        await new Promise(r => setTimeout(r, distractMs));
+                    }
+
                     await randomIdleMovement();
 
                     let acceptText = data.acceptable ? "Yes" : "No";
@@ -620,36 +698,50 @@
                         localStorage.setItem('ben_hit_count', hitCount.toString());
                     }
 
-                    const smartDelay = Math.floor(Math.random() * 2000) + 800;
-                    await bgAwareSleep(smartDelay);
+                    await bgAwareSleep(logNormalDelay(1500, 0.5));
                     await randomIdleMovement();
 
                     const textMap = { 3: "3 Very", 2: "2 Yes", 1: "1 Somewhat", 0: "0 No" };
 
                     const clickScore = async (trait, score) => {
                         const traitIndex = { 'smart': 0, 'trustworthy': 1, 'attractive': 2 }[trait];
+
+                        if (Math.random() < personality.correctionRate) {
+                            const wrongScore = (score + (Math.random() < 0.5 ? 1 : -1) + 4) % 4;
+                            await forceClickExactText(textMap[wrongScore], traitIndex);
+                            await bgAwareSleep(logNormalDelay(1800, 0.4));
+                        }
+
                         let clicked = await forceClickExactText(textMap[score], traitIndex);
                         if (!clicked) throw new Error(`Failed to click rating for ${trait}`);
-                        if (Math.random() < 0.25) {
-                            await bgAwareSleep(Math.floor(Math.random() * 600) + 200);
+
+                        if (Math.random() < 0.2) {
+                            await bgAwareSleep(logNormalDelay(400, 0.6));
                         }
                     };
 
-                    await clickScore('smart', data.smart);
+                    const traits = [
+                        { name: 'smart', score: data.smart },
+                        { name: 'trustworthy', score: data.trustworthy },
+                        { name: 'attractive', score: data.attractive }
+                    ];
+                    if (personality.traitOrder === 'shuffled' && Math.random() < 0.5) {
+                        for (let i = traits.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [traits[i], traits[j]] = [traits[j], traits[i]];
+                        }
+                    }
 
-                    const trustDelay = Math.floor(Math.random() * 2500) + 600;
-                    await bgAwareSleep(trustDelay);
-                    if (Math.random() < 0.3) await randomIdleMovement();
+                    for (let t = 0; t < traits.length; t++) {
+                        if (t > 0) {
+                            const delayMedian = [0, 1800, 2200, 2800][t] || 2000;
+                            await bgAwareSleep(logNormalDelay(delayMedian, 0.5));
+                            if (Math.random() < 0.35) await randomIdleMovement();
+                        }
+                        await clickScore(traits[t].name, traits[t].score);
+                    }
 
-                    await clickScore('trustworthy', data.trustworthy);
-
-                    const attractDelay = Math.floor(Math.random() * 3000) + 1000;
-                    await bgAwareSleep(attractDelay);
-                    await randomIdleMovement();
-
-                    await clickScore('attractive', data.attractive);
-
-                    await bgAwareSleep(Math.floor(Math.random() * 1200) + 500);
+                    await bgAwareSleep(logNormalDelay(800, 0.5));
 
                     const allElements = Array.from(document.body.querySelectorAll('*'));
                     let skipExists = allElements.filter(el => {
@@ -659,22 +751,21 @@
 
                     if (writeNoteThisTime || skipExists) {
                         updateStatus("Writing comment...");
-                        let fallbackNote = (data.note && typeof data.note === 'string' && data.note.trim() !== "") ? data.note : "Great photo";
+                        let fallbackNote = (data.note && typeof data.note === 'string' && data.note.trim() !== "") ? data.note : "nice";
                         let textarea = document.querySelector('textarea');
                         if (textarea) {
                             await simulateHumanTyping(textarea, fallbackNote);
                         }
-                        await bgAwareSleep(Math.floor(Math.random() * 800) + 400);
+                        await bgAwareSleep(logNormalDelay(600, 0.4));
                     }
 
                     updateStatus("Reviewing before submit...");
-                    const reviewTime = Math.floor(Math.random() * 2500) + 800;
-                    await bgAwareSleep(reviewTime);
-                    if (Math.random() < 0.4) await randomIdleMovement();
+                    await bgAwareSleep(logNormalDelay(1500, 0.6));
+                    if (Math.random() < 0.35) await randomIdleMovement();
 
                     await bgAwareSleep(isTabReallyHidden()
-                        ? Math.floor(Math.random() * 1200) + 500
-                        : Math.floor((Math.random() * 2000 + 1500) * getFatigueFactor()));
+                        ? logNormalDelay(800, 0.5)
+                        : logNormalDelay(2000 * getFatigueFactor(), 0.4));
 
                     try {
                         sessionStorage.setItem('ben_just_submitted', 'true');
@@ -685,7 +776,7 @@
                         if (!clickedSubmit) {
                             stopForManualAction("Submit button not found");
                         } else {
-                            updateStatus("Submitted! ✅");
+                            updateStatus("Submitted!");
                             setTimeout(() => { isProcessing = false; }, 2000);
                         }
                     } catch (submitErr) {
