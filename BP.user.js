@@ -630,7 +630,9 @@ Scale: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and use the FULL range - many pho
                     }
 
                     if (!data.acceptable) {
-                        stopForManualAction("AI evaluated 'No Person/Meme'");
+                        updateStatus("AI said not acceptable — reloading for new photo...");
+                        await bgAwareSleep(logNormalDelay(1500, 0.5));
+                        location.reload();
                         return;
                     }
 
