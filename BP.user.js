@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 27.0 - Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      27.0
+// @version      27.1
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -307,7 +307,13 @@
         }
 
         async function getRatingFromGemini(imageUrl, retryCount) {
-            const prompt = `Rate this dating photo. Return ONLY valid JSON with these fields: acceptable (boolean - false ONLY if no real person visible or it's a meme/screenshot), smart (0-3), trustworthy (0-3), attractive (0-3), note (string). Rating guide: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and strict, use 0 and 1 often. NEVER give all same scores. The "note" MUST describe what you actually see in THIS specific photo - mention specific visible details like their smile, eyes, outfit, background, lighting, pose, hair, glasses, etc. Keep it casual and short (2-5 words). Examples of GOOD notes: "love the outdoor bg", "nice smile tho", "cool jacket", "great lighting here", "eyes look kind". Examples of BAD notes (too generic, NEVER use these): "nice", "good photo", "looks good", "great pic".`;
+            const prompt = `Rate this dating photo. Return ONLY valid JSON: {"acceptable": bool, "smart": 0-3, "trustworthy": 0-3, "attractive": 0-3, "note": string}
+
+Scale: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and use the FULL range - many photos deserve 0 or 1. Do NOT inflate scores. Rate each trait INDEPENDENTLY since they measure different things - scores should usually differ from each other.
+
+"note": mention ONE specific visible detail (2-5 casual words) like their smile, eyes, outfit, background, lighting, pose. If scores are mostly low, keep note neutral not positive. If nothing specific stands out, return empty string "". Good: "love the outdoor bg", "cool jacket", "eyes look kind". Bad (NEVER use): "nice", "good photo", "looks good", "nice smile", "great pic".
+
+"acceptable": false ONLY if no real person visible or it's a meme/screenshot.`;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
                 updateStatus(`Trying 3.1-flash-lite (Attempt ${attempt}/2)...`);
@@ -578,6 +584,12 @@
             data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy);
             data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive);
 
+            if (data.smart === data.trustworthy && data.trustworthy === data.attractive) {
+                const traitKeys = ['smart', 'trustworthy', 'attractive'];
+                const pick = traitKeys[Math.floor(Math.random() * 3)];
+                data[pick] = clamp(data[pick] + (data[pick] >= 2 ? -1 : 1));
+            }
+
             const metricsEl = document.getElementById('dash-metrics');
             if (metricsEl) {
                 const rows = metricsEl.querySelectorAll('.dash-row');
@@ -675,13 +687,18 @@
                     }).filter((el, index, arr) => !arr.some(otherEl => el !== otherEl && el.contains(otherEl))).length > 0;
 
                     if (skipExists) {
-                        updateStatus("Writing comment...");
-                        let note = (data.note && typeof data.note === 'string' && data.note.trim().length > 3) ? data.note : "nice smile";
-                        let textarea = document.querySelector('textarea');
-                        if (textarea) {
-                            await simulateHumanTyping(textarea, note);
+                        const shouldWriteNote = Math.random() < 0.22;
+                        const hasValidNote = data.note && typeof data.note === 'string' && data.note.trim().length > 3;
+                        const avgScore = (data.smart + data.trustworthy + data.attractive) / 3;
+
+                        if (shouldWriteNote && hasValidNote && avgScore >= 1.5) {
+                            updateStatus("Writing comment...");
+                            let textarea = document.querySelector('textarea');
+                            if (textarea) {
+                                await simulateHumanTyping(textarea, data.note.trim());
+                            }
+                            await bgAwareSleep(logNormalDelay(600, 0.4));
                         }
-                        await bgAwareSleep(logNormalDelay(600, 0.4));
                     }
 
                     updateStatus("Reviewing before submit...");
