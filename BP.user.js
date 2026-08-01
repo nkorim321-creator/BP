@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 27.0 - Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      27.1
+// @version      27.2
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -307,13 +307,23 @@
         }
 
         async function getRatingFromGemini(imageUrl, retryCount) {
-            const prompt = `Rate this dating photo. Return ONLY valid JSON: {"acceptable": bool, "smart": 0-3, "trustworthy": 0-3, "attractive": 0-3, "note": string}
+            const prompt = `You rate dating profile photos for men. Return ONLY valid JSON: {"acceptable": bool, "smart": 0-3, "trustworthy": 0-3, "attractive": 0-3, "note": string}
 
-Scale: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and use the FULL range - many photos deserve 0 or 1. Do NOT inflate scores. Rate each trait INDEPENDENTLY since they measure different things - scores should usually differ from each other.
+"acceptable": true if any real person is visible (even shirtless/blurry/sunglasses/hat). false ONLY for text memes, empty rooms, or drawings.
 
-"note": mention ONE specific visible detail (2-5 casual words) like their smile, eyes, outfit, background, lighting, pose. If scores are mostly low, keep note neutral not positive. If nothing specific stands out, return empty string "". Good: "love the outdoor bg", "cool jacket", "eyes look kind". Bad (NEVER use): "nice", "good photo", "looks good", "nice smile", "great pic".
+Scale: 0=No, 1=Somewhat, 2=Yes, 3=Very.
 
-"acceptable": false ONLY if no real person visible or it's a meme/screenshot.`;
+RATE EACH TRAIT SEPARATELY with different criteria:
+- SMART: Does he look intelligent? Cues: glasses, books, professional clothing, thoughtful expression, refined setting. A shirtless gym selfie = 0 or 1. A guy in a suit reading = 3.
+- TRUSTWORTHY: Does he look honest/kind? Cues: genuine smile, direct warm eye contact, open posture, approachable expression. A stern face or hidden eyes = 0 or 1. A warm genuine smile = 3.
+- ATTRACTIVE: Physical appeal, grooming, photo quality, style. Bad lighting/blurry/unflattering angle = 0 or 1. Great photo of a good-looking guy = 3.
+
+CRITICAL RULES:
+1. The three scores MUST reflect independent judgments - it is RARE for all three to be the same. If you feel like giving 3,3,3 or 2,2,2, STOP and reconsider each trait separately.
+2. Use the FULL 0-3 range. Most casual selfies deserve at least one 0 or 1. Do not inflate.
+3. Most dating photos are average - 1s and 2s should be your most common scores, not 3s.
+
+"note": Return empty string "" unless something SPECIFIC and NOTEWORTHY stands out (either good or bad). Do NOT force a note. If you write one, it must match your scores in tone (don't say "great smile" if you gave low scores). Keep it 2-5 casual words about a specific visible detail. Good: "love the outdoor bg", "cool jacket", "harsh lighting", "eyes hidden by shades", "cluttered background". FORBIDDEN generic notes: "nice", "good photo", "looks good", "nice smile", "great pic", "background looks okay".`;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
                 updateStatus(`Trying 3.1-flash-lite (Attempt ${attempt}/2)...`);
@@ -584,10 +594,26 @@ Scale: 0=No 1=Somewhat 2=Yes 3=Very. Be honest and use the FULL range - many pho
             data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy);
             data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive);
 
-            if (data.smart === data.trustworthy && data.trustworthy === data.attractive) {
-                const traitKeys = ['smart', 'trustworthy', 'attractive'];
+            const traitKeys = ['smart', 'trustworthy', 'attractive'];
+            const scores = traitKeys.map(k => data[k]);
+            const uniqueScores = new Set(scores);
+            const scoreRange = Math.max(...scores) - Math.min(...scores);
+
+            if (uniqueScores.size === 1) {
                 const pick = traitKeys[Math.floor(Math.random() * 3)];
                 data[pick] = clamp(data[pick] + (data[pick] >= 2 ? -1 : 1));
+                const pick2 = traitKeys.filter(k => k !== pick)[Math.floor(Math.random() * 2)];
+                if (Math.random() < 0.5) {
+                    data[pick2] = clamp(data[pick2] + (data[pick2] >= 2 ? -1 : 1));
+                }
+            } else if (scoreRange === 1 && Math.random() < 0.4) {
+                const highIdx = scores.indexOf(Math.max(...scores));
+                data[traitKeys[highIdx]] = clamp(scores[highIdx] - 1);
+            }
+
+            if (scores.every(s => s >= 2) && Math.random() < 0.35) {
+                const pick = traitKeys[Math.floor(Math.random() * 3)];
+                data[pick] = clamp(data[pick] - Math.floor(Math.random() * 2 + 1));
             }
 
             const metricsEl = document.getElementById('dash-metrics');
