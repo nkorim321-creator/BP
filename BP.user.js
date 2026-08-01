@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater (Version 27.0 - Stealth)
+// @name         MTurk Human-Like Rater (Version 28.0 - Multi-Layer Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      27.3
+// @version      28.0
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -139,9 +139,28 @@
                 distractionRate: 0.02 + seed() * 0.06,
                 noteStyle: ['minimal', 'short', 'medium'][Math.floor(seed() * 3)],
                 noteRate: 0.15 + seed() * 0.13,
-                harshness: -0.15 + seed() * 0.3,
+                harshness: -0.25 + seed() * 0.4,
                 traitOrder: seed() < 0.15 ? 'shuffled' : 'normal',
                 skipRate: 0.005 + seed() * 0.025,
+                opinions: {
+                    shirtlessSmartPenalty: seed() < 0.6,
+                    shirtlessTrustPenalty: seed() < 0.5,
+                    glassesSmartBonus: seed() < 0.55,
+                    smileTrustBonus: seed() < 0.7,
+                    sunglassesTrustPenalty: seed() < 0.6,
+                    hatSmartPenalty: seed() < 0.35,
+                    professionalAttireSmartBonus: seed() < 0.5,
+                    outdoorAttractBonus: seed() < 0.3,
+                    grumpyExpressionTrustPenalty: seed() < 0.5,
+                    biasStrength: 0.6 + seed() * 0.7
+                },
+                voice: {
+                    usesExclamation: seed() < 0.2,
+                    lowercaseOnly: seed() < 0.55,
+                    contractions: seed() < 0.4,
+                    slang: seed() < 0.3,
+                    critical: seed() < 0.4
+                },
                 created: Date.now()
             };
 
@@ -158,16 +177,132 @@
             return Math.floor(Math.max(median * 0.3, median * Math.exp(sigma * z)));
         }
 
-        function applyRatingNoise(score, traitBias) {
-            const combined = traitBias + personality.harshness;
+        function applyRatingNoise(score, traitBias, extraBias = 0) {
+            const combined = traitBias + personality.harshness + extraBias;
             let noised = score;
 
-            if (Math.random() < Math.abs(combined) * 0.15) {
+            if (Math.random() < Math.abs(combined) * 0.35) {
                 noised += combined > 0 ? 1 : -1;
             }
 
             return Math.max(0, Math.min(3, Math.round(noised)));
         }
+
+        // Fast string hash for photo URL identity
+        function hashStr(s) {
+            let h = 0;
+            for (let i = 0; i < s.length; i++) {
+                h = ((h << 5) - h) + s.charCodeAt(i);
+                h |= 0;
+            }
+            return h.toString(36);
+        }
+
+        function extractPhotoId(url) {
+            const m = url && url.match(/([a-f0-9\-]{8,})(?:\.[a-z]+)?(?:\?.*)?$/i);
+            return m ? m[1] : hashStr(url || '');
+        }
+
+        // Per-photo memory: remember what we rated for the same photo
+        function getPhotoMemory() {
+            try { return JSON.parse(GM_getValue('ben_photo_memory', '{}')); } catch (e) { return {}; }
+        }
+        function savePhotoMemory(mem) {
+            const keys = Object.keys(mem);
+            if (keys.length > 800) {
+                const sorted = keys.sort((a, b) => (mem[a].t || 0) - (mem[b].t || 0));
+                for (let i = 0; i < keys.length - 800; i++) delete mem[sorted[i]];
+            }
+            GM_setValue('ben_photo_memory', JSON.stringify(mem));
+        }
+
+        // Session-wide score distribution — nudge toward realistic spread
+        function getSessionDist() {
+            try { return JSON.parse(sessionStorage.getItem('ben_score_dist') || '{"0":0,"1":0,"2":0,"3":0}'); }
+            catch(e) { return {"0":0,"1":0,"2":0,"3":0}; }
+        }
+        function saveSessionDist(d) { sessionStorage.setItem('ben_score_dist', JSON.stringify(d)); }
+        function recordScore(s) {
+            const d = getSessionDist();
+            d[s] = (d[s] || 0) + 1;
+            saveSessionDist(d);
+        }
+        // Target: 0≈15%, 1≈30%, 2≈35%, 3≈20% — realistic human distribution
+        function computeAdaptiveHarshness() {
+            const d = getSessionDist();
+            const total = (d["0"]||0)+(d["1"]||0)+(d["2"]||0)+(d["3"]||0);
+            if (total < 8) return 0;
+            const avg = ((d["1"]||0)*1 + (d["2"]||0)*2 + (d["3"]||0)*3) / total;
+            if (avg > 2.1) return -0.7;
+            if (avg > 1.85) return -0.35;
+            if (avg < 1.3) return 0.25;
+            return 0;
+        }
+        function shouldForceLowScore() {
+            const d = getSessionDist();
+            const total = (d["0"]||0)+(d["1"]||0)+(d["2"]||0)+(d["3"]||0);
+            if (total < 15) return false;
+            const zeroPct = (d["0"]||0) / total;
+            return zeroPct < 0.08 && Math.random() < 0.25;
+        }
+        function shouldSuppressHighScore() {
+            const d = getSessionDist();
+            const total = (d["0"]||0)+(d["1"]||0)+(d["2"]||0)+(d["3"]||0);
+            if (total < 12) return false;
+            const threePct = (d["3"]||0) / total;
+            return threePct > 0.22;
+        }
+
+        // Cross-tab used-notes log to avoid same phrase across accounts
+        function getUsedNotes() {
+            try { return JSON.parse(GM_getValue('ben_used_notes', '[]')); } catch(e) { return []; }
+        }
+        function addUsedNote(note) {
+            const list = getUsedNotes();
+            list.push({ n: note.toLowerCase().trim(), t: Date.now() });
+            const trimmed = list.slice(-300);
+            GM_setValue('ben_used_notes', JSON.stringify(trimmed));
+        }
+        function isNoteRecentlyUsed(note) {
+            const n = note.toLowerCase().trim();
+            const list = getUsedNotes();
+            const cutoff = Date.now() - 48 * 3600 * 1000;
+            return list.some(e => e.n === n && e.t > cutoff);
+        }
+
+        // Apply per-personality opinion biases based on features AI reported
+        function applyOpinionBias(features) {
+            const bias = { smart: 0, trustworthy: 0, attractive: 0 };
+            if (!features || typeof features !== 'object') return bias;
+            const o = personality.opinions;
+            const s = o.biasStrength;
+
+            if (features.shirtless && o.shirtlessSmartPenalty) bias.smart -= 0.5 * s;
+            if (features.shirtless && o.shirtlessTrustPenalty) bias.trustworthy -= 0.4 * s;
+            if (features.glasses && o.glassesSmartBonus) bias.smart += 0.4 * s;
+            if (features.smiling && o.smileTrustBonus) bias.trustworthy += 0.4 * s;
+            if (features.sunglasses && o.sunglassesTrustPenalty) bias.trustworthy -= 0.5 * s;
+            if (features.hat && o.hatSmartPenalty) bias.smart -= 0.25 * s;
+            if (features.professional_attire && o.professionalAttireSmartBonus) bias.smart += 0.5 * s;
+            if (features.outdoor && o.outdoorAttractBonus) bias.attractive += 0.3 * s;
+            if (features.grumpy_expression && o.grumpyExpressionTrustPenalty) bias.trustworthy -= 0.5 * s;
+            return bias;
+        }
+
+        // Adjust note to match personality voice
+        function styleNote(note) {
+            if (!note) return note;
+            let n = note.trim();
+            const v = personality.voice;
+            if (v.lowercaseOnly) n = n.toLowerCase();
+            if (v.usesExclamation && !n.endsWith('!') && !n.endsWith('.') && Math.random() < 0.4) n += '!';
+            if (v.contractions) {
+                n = n.replace(/\bit is\b/gi, "it's").replace(/\bdo not\b/gi, "don't").replace(/\bthat is\b/gi, "that's");
+            }
+            return n;
+        }
+
+        let currentPhotoUrl = null;
 
         // --- Session Fatigue: HIT বাড়লে delay বাড়ে ---
         const sessionStartTime = Date.now();
@@ -302,6 +437,7 @@
             if (!img || !img.src) return;
 
             isProcessing = true;
+            currentPhotoUrl = img.src;
             updateStatus("Processing...");
             updateStatus("Calling AI...");
             await getRatingFromGemini(img.src, 1);
@@ -313,6 +449,16 @@
 Return ONLY valid JSON:
 {
   "observation": "<one sentence describing what you actually see: setting, expression, clothing, lighting, framing, notable details>",
+  "features": {
+    "shirtless": <bool>,
+    "glasses": <bool>,
+    "sunglasses": <bool>,
+    "hat": <bool>,
+    "smiling": <bool>,
+    "outdoor": <bool>,
+    "professional_attire": <bool>,
+    "grumpy_expression": <bool>
+  },
   "acceptable": <bool>,
   "smart": <0-3>,
   "trustworthy": <0-3>,
@@ -320,7 +466,7 @@ Return ONLY valid JSON:
   "note": "<string, often empty>"
 }
 
-STEP 1 — "observation": First describe what is actually in THIS photo (not generic). This forces you to look, not template-match.
+STEP 1 — "observation" + "features": First describe what is actually in THIS photo, then fill each feature boolean honestly based on your observation. This forces you to look at THIS specific image.
 
 STEP 2 — "acceptable": true if any real person is visible (shirtless/blurry/sunglasses/hat are all OK). false ONLY for text memes, empty rooms, cartoons, or pure landscapes with no person.
 
@@ -610,12 +756,34 @@ STEP 5 — "note":
             updateStatus("Studying the photo...");
 
             data.acceptable = (data.acceptable === true || data.acceptable === "true");
-            data.smart = applyRatingNoise(clamp(data.smart), personality.ratingBias.smart);
-            data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy);
-            data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive);
+
+            // Opinion bias from AI-detected features (per-personality quirks)
+            const opinionBias = applyOpinionBias(data.features || {});
+
+            // Adaptive session-wide harshness (self-correcting against inflation)
+            const adaptive = computeAdaptiveHarshness();
+
+            data.smart = applyRatingNoise(clamp(data.smart), personality.ratingBias.smart, opinionBias.smart + adaptive);
+            data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy, opinionBias.trustworthy + adaptive);
+            data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive, opinionBias.attractive + adaptive);
 
             const traitKeys = ['smart', 'trustworthy', 'attractive'];
-            const scores = traitKeys.map(k => data[k]);
+
+            // Suppress excess 3s to keep distribution realistic
+            if (shouldSuppressHighScore()) {
+                traitKeys.forEach(k => {
+                    if (data[k] === 3 && Math.random() < 0.55) data[k] = 2;
+                });
+            }
+
+            // Inject an occasional 0 if session lacks them
+            if (shouldForceLowScore()) {
+                const scoresNow = traitKeys.map(k => data[k]);
+                const minIdx = scoresNow.indexOf(Math.min(...scoresNow));
+                data[traitKeys[minIdx]] = 0;
+            }
+
+            let scores = traitKeys.map(k => data[k]);
             const uniqueScores = new Set(scores);
             const scoreRange = Math.max(...scores) - Math.min(...scores);
 
@@ -631,10 +799,31 @@ STEP 5 — "note":
                 data[traitKeys[highIdx]] = clamp(scores[highIdx] - 1);
             }
 
-            if (scores.every(s => s >= 2) && Math.random() < 0.35) {
+            scores = traitKeys.map(k => data[k]);
+            if (scores.every(s => s >= 2) && Math.random() < 0.4) {
                 const pick = traitKeys[Math.floor(Math.random() * 3)];
-                data[pick] = clamp(data[pick] - Math.floor(Math.random() * 2 + 1));
+                data[pick] = clamp(data[pick] - (Math.random() < 0.4 ? 2 : 1));
             }
+
+            // Per-photo drift: if we've seen this photo before, shift a score sometimes (human inconsistency)
+            if (currentPhotoUrl) {
+                const photoId = extractPhotoId(currentPhotoUrl);
+                const mem = getPhotoMemory();
+                const prev = mem[photoId];
+                if (prev && Math.random() < 0.35) {
+                    const pick = traitKeys[Math.floor(Math.random() * 3)];
+                    const shift = Math.random() < 0.5 ? 1 : -1;
+                    data[pick] = clamp(data[pick] + shift);
+                    console.log(`🔄 Photo seen before — drifted ${pick} by ${shift}`);
+                }
+                mem[photoId] = { s: data.smart, t: data.trustworthy, a: data.attractive, ts: Date.now(), t2: Date.now() };
+                savePhotoMemory(mem);
+            }
+
+            // Record final scores in session distribution
+            recordScore(data.smart);
+            recordScore(data.trustworthy);
+            recordScore(data.attractive);
 
             const metricsEl = document.getElementById('dash-metrics');
             if (metricsEl) {
@@ -738,20 +927,33 @@ STEP 5 — "note":
                         const noteRate = personality.noteRate || 0.22;
                         const shouldWriteNote = Math.random() < noteRate;
                         const rawNote = (data.note || '').trim().toLowerCase();
-                        const genericNotes = ['nice', 'good photo', 'looks good', 'nice smile', 'great pic', 'background looks okay', 'cool photo', 'good', 'great', 'ok', 'okay'];
+                        const genericNotes = ['nice', 'good photo', 'looks good', 'nice smile', 'great pic', 'background looks okay', 'cool photo', 'good', 'great', 'ok', 'okay', 'nice pic', 'good pic', 'love it', 'awesome'];
                         const isGeneric = genericNotes.some(g => rawNote === g || rawNote.startsWith(g + ' ') || rawNote.endsWith(' ' + g));
                         const hasValidNote = rawNote.length > 3 && rawNote.length < 40 && !isGeneric;
                         const avgScore = (data.smart + data.trustworthy + data.attractive) / 3;
 
-                        if (shouldWriteNote && hasValidNote && avgScore >= 1.3) {
+                        // Cross-tab dedup: don't reuse recent notes across MTurk accounts
+                        const alreadyUsed = hasValidNote && isNoteRecentlyUsed(rawNote);
+
+                        // Tone match: no positive notes on low ratings
+                        const positiveWords = ['great', 'love', 'nice', 'cool', 'awesome', 'perfect', 'beautiful', 'wonderful', 'amazing', 'good'];
+                        const negativeWords = ['bad', 'poor', 'harsh', 'blurry', 'dark', 'cluttered', 'unflattering', 'awkward', 'weird'];
+                        const noteIsPositive = positiveWords.some(w => rawNote.includes(w));
+                        const noteIsNegative = negativeWords.some(w => rawNote.includes(w));
+                        const anyZero = data.smart === 0 || data.trustworthy === 0 || data.attractive === 0;
+                        const toneMismatch = (noteIsPositive && (avgScore < 1.5 || anyZero)) || (noteIsNegative && avgScore >= 2.3);
+
+                        if (shouldWriteNote && hasValidNote && !alreadyUsed && !toneMismatch && avgScore >= 1.3) {
                             updateStatus("Writing comment...");
+                            const styledNote = styleNote(data.note.trim());
                             let textarea = document.querySelector('textarea');
                             if (textarea) {
-                                await simulateHumanTyping(textarea, data.note.trim());
+                                await simulateHumanTyping(textarea, styledNote);
                             }
+                            addUsedNote(styledNote);
                             await bgAwareSleep(logNormalDelay(600, 0.4));
                         } else {
-                            console.log(`ℹ️ No note (rate=${noteRate.toFixed(2)}, roll=${shouldWriteNote}, valid=${hasValidNote}, avg=${avgScore.toFixed(1)})`);
+                            console.log(`ℹ️ No note (rate=${noteRate.toFixed(2)}, roll=${shouldWriteNote}, valid=${hasValidNote}, used=${alreadyUsed}, toneMismatch=${toneMismatch}, avg=${avgScore.toFixed(1)})`);
                         }
                     }
 
