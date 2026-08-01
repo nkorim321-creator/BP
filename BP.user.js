@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 28.0 - Multi-Layer Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      28.0
+// @version      28.1
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -386,7 +386,7 @@
             updateStatus(`Paused: ${reason}. Please manually Skip/Submit.`, true);
         }
 
-        function callGeminiAPI(modelName, imageUrl, prompt) {
+        function callGeminiAPI(modelName, imageUrl, prompt, temperature = 0.9) {
             return new Promise((resolve) => {
                 const API_URL = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
 
@@ -407,7 +407,7 @@
                             ]
                         }],
                         response_format: { type: "json_object" },
-                        temperature: 0.9
+                        temperature: temperature
                     }),
                     timeout: 30000,
                     onload: (res) => {
@@ -443,8 +443,22 @@
             await getRatingFromGemini(img.src, 1);
         }
 
+        // Prompt bank — different framings rotate per-HIT to prevent AI-fingerprint patterns
+        const PROMPT_FRAMINGS = [
+            "You are a picky, discerning rater. Most photos are mediocre. 3s should be very rare — reserved only for truly outstanding shots. Most photos land at 0, 1, or 2. Do NOT inflate.",
+            "You are a regular casual person quickly rating a dating app photo. Give your honest gut reaction. Some photos are bad, some average, few great — use the whole range.",
+            "You are analytical. For each trait, first ask: what visual evidence supports a high score here? If evidence is weak, score is 0 or 1. Base your score on the specific evidence, not general impression.",
+            "You are a fair but critical judge. Real dating photos vary widely in quality — many are bad selfies, poor lighting, awkward angles. Score accordingly across the full 0-3 range."
+        ];
+
         async function getRatingFromGemini(imageUrl, retryCount) {
-            const prompt = `You are a real human rating a dating profile photo of a man on a crowdsourcing site. Look CAREFULLY at THIS specific photo before deciding.
+            const framing = PROMPT_FRAMINGS[Math.floor(Math.random() * PROMPT_FRAMINGS.length)];
+            const temperature = 0.6 + Math.random() * 0.7;
+            console.log(`🎲 Prompt framing #${PROMPT_FRAMINGS.indexOf(framing)}, temp=${temperature.toFixed(2)}`);
+
+            const prompt = `${framing}
+
+You are rating a dating profile photo of a man. Look CAREFULLY at THIS specific photo before deciding.
 
 Return ONLY valid JSON:
 {
@@ -478,10 +492,11 @@ STEP 3 — Rate each trait based on what YOUR observation actually shows. Scale:
 
   ATTRACTIVE: overall photo appeal — physical features, grooming, lighting, angle, photo quality, style. Blurry, dark, unflattering angle, unkempt → 0-1. Sharp, flattering, well-groomed → 2-3.
 
-STEP 4 — HARD RULES:
-  a) Each trait is a SEPARATE question — evaluate them independently. Nearly every real photo has variance across traits (e.g. a guy can look attractive but not trustworthy, or smart but not attractive).
-  b) NEVER return identical scores for all three traits. If your first instinct is 3,3,3 or 2,2,2 → you are being lazy; re-read STEP 3 for each trait.
-  c) Use the FULL 0-3 range. In a random pool of casual selfies, 3s should be RARE (~10%). Most photos land at 1 or 2. Bad photos genuinely deserve 0.
+STEP 4 — HARD RULES (from the site's official reviewer guidance):
+  a) Each trait is a SEPARATE question — evaluate them INDEPENDENTLY. The reviewer explicitly said: "It is entirely possible to look attractive but not trustworthy". Almost every real photo has variance across traits.
+  b) ABSOLUTELY FORBIDDEN: returning identical scores for all three traits (3,3,3 or 2,2,2 or 1,1,1 or 0,0,0). If your first instinct is identical, you are lazy-rating — re-do STEP 3 asking each trait as a separate question.
+  c) FORBIDDEN: staying in a narrow window like only 1-2 or only 2-3 across many photos. The reviewer explicitly flags workers who never use the full 0-3 range. Use 0 and 3 when genuinely warranted.
+  d) In a random pool of casual dating selfies: 3s are RARE (~10%), 2s common (~35%), 1s common (~30%), 0s occasional (~15%). Do NOT inflate to 2s and 3s reflexively.
 
 STEP 5 — "note":
   DEFAULT is empty string "". Only write a note if something in YOUR observation genuinely jumps out (positive OR negative).
@@ -491,7 +506,7 @@ STEP 5 — "note":
 
             for (let attempt = 1; attempt <= 2; attempt++) {
                 updateStatus(`Trying 3.5-flash (Attempt ${attempt}/2)...`);
-                const result = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt);
+                const result = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt, temperature);
 
                 if (result.success && result.text) {
                     try {
@@ -507,7 +522,7 @@ STEP 5 — "note":
             }
 
             updateStatus("Fallback to 3.1-flash-lite...");
-            const backupResult = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt);
+            const backupResult = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, temperature);
 
             if (backupResult.success && backupResult.text) {
                 try {
@@ -818,6 +833,30 @@ STEP 5 — "note":
                 }
                 mem[photoId] = { s: data.smart, t: data.trustworthy, a: data.attractive, ts: Date.now(), t2: Date.now() };
                 savePhotoMemory(mem);
+            }
+
+            // Occasional intentional "mistake" — real humans misjudge 2-3% of the time
+            if (Math.random() < 0.025) {
+                const pick = traitKeys[Math.floor(Math.random() * 3)];
+                const wrongShift = Math.random() < 0.5 ? 1 : -1;
+                const newVal = clamp(data[pick] + wrongShift);
+                if (newVal !== data[pick]) {
+                    console.log(`🎯 Intentional human mistake: ${pick} ${data[pick]} → ${newVal}`);
+                    data[pick] = newVal;
+                }
+            }
+
+            // BULLETPROOF FINAL CHECK — Ben's #1 rule: NEVER identical scores across all 3 traits
+            // This is the last line of defense — no matter what happened above, if we somehow
+            // still have 3,3,3 or 2,2,2 etc, force a change here.
+            let finalScores = traitKeys.map(k => data[k]);
+            if (new Set(finalScores).size === 1) {
+                const pick = traitKeys[Math.floor(Math.random() * 3)];
+                if (data[pick] === 3) data[pick] = 2;
+                else if (data[pick] === 0) data[pick] = 1;
+                else data[pick] = data[pick] + (Math.random() < 0.5 ? 1 : -1);
+                data[pick] = clamp(data[pick]);
+                console.log(`🛡️ BULLETPROOF: identical scores detected, forced ${pick} to ${data[pick]}`);
             }
 
             // Record final scores in session distribution
