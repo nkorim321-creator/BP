@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 27.0 - Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      27.2
+// @version      27.3
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -138,6 +138,7 @@
                 correctionRate: 0.03 + seed() * 0.12,
                 distractionRate: 0.02 + seed() * 0.06,
                 noteStyle: ['minimal', 'short', 'medium'][Math.floor(seed() * 3)],
+                noteRate: 0.15 + seed() * 0.13,
                 harshness: -0.15 + seed() * 0.3,
                 traitOrder: seed() < 0.15 ? 'shuffled' : 'normal',
                 skipRate: 0.005 + seed() * 0.025,
@@ -307,32 +308,50 @@
         }
 
         async function getRatingFromGemini(imageUrl, retryCount) {
-            const prompt = `You rate dating profile photos for men. Return ONLY valid JSON: {"acceptable": bool, "smart": 0-3, "trustworthy": 0-3, "attractive": 0-3, "note": string}
+            const prompt = `You are a real human rating a dating profile photo of a man on a crowdsourcing site. Look CAREFULLY at THIS specific photo before deciding.
 
-"acceptable": true if any real person is visible (even shirtless/blurry/sunglasses/hat). false ONLY for text memes, empty rooms, or drawings.
+Return ONLY valid JSON:
+{
+  "observation": "<one sentence describing what you actually see: setting, expression, clothing, lighting, framing, notable details>",
+  "acceptable": <bool>,
+  "smart": <0-3>,
+  "trustworthy": <0-3>,
+  "attractive": <0-3>,
+  "note": "<string, often empty>"
+}
 
-Scale: 0=No, 1=Somewhat, 2=Yes, 3=Very.
+STEP 1 — "observation": First describe what is actually in THIS photo (not generic). This forces you to look, not template-match.
 
-RATE EACH TRAIT SEPARATELY with different criteria:
-- SMART: Does he look intelligent? Cues: glasses, books, professional clothing, thoughtful expression, refined setting. A shirtless gym selfie = 0 or 1. A guy in a suit reading = 3.
-- TRUSTWORTHY: Does he look honest/kind? Cues: genuine smile, direct warm eye contact, open posture, approachable expression. A stern face or hidden eyes = 0 or 1. A warm genuine smile = 3.
-- ATTRACTIVE: Physical appeal, grooming, photo quality, style. Bad lighting/blurry/unflattering angle = 0 or 1. Great photo of a good-looking guy = 3.
+STEP 2 — "acceptable": true if any real person is visible (shirtless/blurry/sunglasses/hat are all OK). false ONLY for text memes, empty rooms, cartoons, or pure landscapes with no person.
 
-CRITICAL RULES:
-1. The three scores MUST reflect independent judgments - it is RARE for all three to be the same. If you feel like giving 3,3,3 or 2,2,2, STOP and reconsider each trait separately.
-2. Use the FULL 0-3 range. Most casual selfies deserve at least one 0 or 1. Do not inflate.
-3. Most dating photos are average - 1s and 2s should be your most common scores, not 3s.
+STEP 3 — Rate each trait based on what YOUR observation actually shows. Scale: 0=No, 1=Somewhat, 2=Yes, 3=Very.
 
-"note": Return empty string "" unless something SPECIFIC and NOTEWORTHY stands out (either good or bad). Do NOT force a note. If you write one, it must match your scores in tone (don't say "great smile" if you gave low scores). Keep it 2-5 casual words about a specific visible detail. Good: "love the outdoor bg", "cool jacket", "harsh lighting", "eyes hidden by shades", "cluttered background". FORBIDDEN generic notes: "nice", "good photo", "looks good", "nice smile", "great pic", "background looks okay".`;
+  SMART: intelligent cues in THIS photo — glasses, books, professional/refined setting, thoughtful expression, tidy presentation. Shirtless mirror selfies, party pics, sloppy backgrounds → 0-1. Reading, working, well-composed formal shots → 2-3.
+
+  TRUSTWORTHY: honesty/warmth cues in THIS photo — genuine (not forced) smile, direct warm eye contact, open relaxed posture. Hidden eyes (shades, hats low), stern/aggressive face, closed body language → 0-1. Warm authentic smile, kind eyes → 2-3.
+
+  ATTRACTIVE: overall photo appeal — physical features, grooming, lighting, angle, photo quality, style. Blurry, dark, unflattering angle, unkempt → 0-1. Sharp, flattering, well-groomed → 2-3.
+
+STEP 4 — HARD RULES:
+  a) Each trait is a SEPARATE question — evaluate them independently. Nearly every real photo has variance across traits (e.g. a guy can look attractive but not trustworthy, or smart but not attractive).
+  b) NEVER return identical scores for all three traits. If your first instinct is 3,3,3 or 2,2,2 → you are being lazy; re-read STEP 3 for each trait.
+  c) Use the FULL 0-3 range. In a random pool of casual selfies, 3s should be RARE (~10%). Most photos land at 1 or 2. Bad photos genuinely deserve 0.
+
+STEP 5 — "note":
+  DEFAULT is empty string "". Only write a note if something in YOUR observation genuinely jumps out (positive OR negative).
+  If you write one: 2-5 casual lowercase words about the SPECIFIC detail you noticed, tone matching your scores. If scores are low, note should reflect that.
+  Good notes: "love the outdoor bg", "cool jacket", "harsh shadow on face", "eyes hidden by shades", "cluttered kitchen bg", "great outfit choice".
+  FORBIDDEN generic notes (never write these): "nice", "good photo", "looks good", "nice smile", "great pic", "background looks okay", "cool photo".`;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
-                updateStatus(`Trying 3.1-flash-lite (Attempt ${attempt}/2)...`);
-                const result = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt);
+                updateStatus(`Trying 3.5-flash (Attempt ${attempt}/2)...`);
+                const result = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt);
 
                 if (result.success && result.text) {
                     try {
                         let cleanText = result.text.replace(/```json/gi, '').replace(/```/g, '').trim();
                         let parsedData = JSON.parse(cleanText);
+                        if (parsedData.observation) console.log("📷 AI saw:", parsedData.observation);
                         updateMetrics(parsedData);
                         applyToForm(parsedData);
                         return;
@@ -341,13 +360,14 @@ CRITICAL RULES:
                 if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
             }
 
-            updateStatus("Fallback to 3.5-flash...");
-            const backupResult = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt);
+            updateStatus("Fallback to 3.1-flash-lite...");
+            const backupResult = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt);
 
             if (backupResult.success && backupResult.text) {
                 try {
                     let cleanText = backupResult.text.replace(/```json/gi, '').replace(/```/g, '').trim();
                     let parsedData = JSON.parse(cleanText);
+                    if (parsedData.observation) console.log("📷 AI saw:", parsedData.observation);
                     updateMetrics(parsedData);
                     applyToForm(parsedData);
                     return;
@@ -715,17 +735,23 @@ CRITICAL RULES:
                     }).filter((el, index, arr) => !arr.some(otherEl => el !== otherEl && el.contains(otherEl))).length > 0;
 
                     if (skipExists) {
-                        const shouldWriteNote = Math.random() < 0.22;
-                        const hasValidNote = data.note && typeof data.note === 'string' && data.note.trim().length > 3;
+                        const noteRate = personality.noteRate || 0.22;
+                        const shouldWriteNote = Math.random() < noteRate;
+                        const rawNote = (data.note || '').trim().toLowerCase();
+                        const genericNotes = ['nice', 'good photo', 'looks good', 'nice smile', 'great pic', 'background looks okay', 'cool photo', 'good', 'great', 'ok', 'okay'];
+                        const isGeneric = genericNotes.some(g => rawNote === g || rawNote.startsWith(g + ' ') || rawNote.endsWith(' ' + g));
+                        const hasValidNote = rawNote.length > 3 && rawNote.length < 40 && !isGeneric;
                         const avgScore = (data.smart + data.trustworthy + data.attractive) / 3;
 
-                        if (shouldWriteNote && hasValidNote && avgScore >= 1.5) {
+                        if (shouldWriteNote && hasValidNote && avgScore >= 1.3) {
                             updateStatus("Writing comment...");
                             let textarea = document.querySelector('textarea');
                             if (textarea) {
                                 await simulateHumanTyping(textarea, data.note.trim());
                             }
                             await bgAwareSleep(logNormalDelay(600, 0.4));
+                        } else {
+                            console.log(`ℹ️ No note (rate=${noteRate.toFixed(2)}, roll=${shouldWriteNote}, valid=${hasValidNote}, avg=${avgScore.toFixed(1)})`);
                         }
                     }
 
