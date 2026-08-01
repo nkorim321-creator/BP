@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 28.0 - Multi-Layer Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      28.2
+// @version      28.3
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -1013,9 +1013,13 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                         sessionHITsDone++;
                         sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
 
-                        let clickedSubmit = await forceClickExactText('Submit', 0);
-                        if (!clickedSubmit) {
-                            stopForManualAction("Submit button not found");
+                        let clickedAdvance = await forceClickExactText('Submit', 0);
+                        if (!clickedAdvance) {
+                            console.log("ℹ️ Submit button not found — trying Skip (photofeeler-style advance)");
+                            clickedAdvance = await forceClickExactText('Skip', 0);
+                        }
+                        if (!clickedAdvance) {
+                            stopForManualAction("Neither Submit nor Skip found");
                         } else {
                             updateStatus("Submitted!");
                             setTimeout(() => { isProcessing = false; }, 2000);
