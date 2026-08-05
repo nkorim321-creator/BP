@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 28.3 - Multi-Layer Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      28.3
+// @version      28.4
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -504,37 +504,59 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
             updateStatus("Calling 3.1-flash-lite...");
             let result = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, temperature);
 
-            if (result.success && result.text) {
+            function tryParse(res, modelLabel) {
+                if (!res.success) {
+                    console.warn(`⚠️ ${modelLabel} API failed:`, res.error || 'unknown');
+                    return null;
+                }
+                if (!res.text) {
+                    console.warn(`⚠️ ${modelLabel} returned empty text`);
+                    return null;
+                }
                 try {
-                    let cleanText = result.text.replace(/```json/gi, '').replace(/```/g, '').trim();
-                    let parsedData = JSON.parse(cleanText);
-                    if (parsedData.observation) console.log("📷 AI saw:", parsedData.observation);
-                    cache[photoId] = { data: parsedData, t: Date.now() };
-                    saveResponseCache(cache);
-                    updateMetrics(parsedData);
-                    applyToForm(parsedData);
-                    return;
-                } catch (e) {}
+                    let cleanText = res.text.replace(/```json/gi, '').replace(/```/g, '').trim();
+                    return JSON.parse(cleanText);
+                } catch (e) {
+                    console.warn(`⚠️ ${modelLabel} JSON parse failed:`, e.message, '| raw:', res.text.slice(0, 200));
+                    return null;
+                }
             }
 
-            // Fallback to more capable model only if lite fails
+            function acceptData(parsedData) {
+                if (parsedData.observation) console.log("📷 AI saw:", parsedData.observation);
+                cache[photoId] = { data: parsedData, t: Date.now() };
+                saveResponseCache(cache);
+                updateMetrics(parsedData);
+                applyToForm(parsedData);
+            }
+
+            let parsed = tryParse(result, "3.1-flash-lite");
+            if (parsed) { acceptData(parsed); return; }
+
+            // Fallback 1: more capable model at same temperature
             updateStatus("Fallback to 3.5-flash...");
-            const backupResult = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt, temperature);
+            let backupResult = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt, temperature);
+            parsed = tryParse(backupResult, "3.5-flash");
+            if (parsed) { acceptData(parsed); return; }
 
-            if (backupResult.success && backupResult.text) {
-                try {
-                    let cleanText = backupResult.text.replace(/```json/gi, '').replace(/```/g, '').trim();
-                    let parsedData = JSON.parse(cleanText);
-                    if (parsedData.observation) console.log("📷 AI saw:", parsedData.observation);
-                    cache[photoId] = { data: parsedData, t: Date.now() };
-                    saveResponseCache(cache);
-                    updateMetrics(parsedData);
-                    applyToForm(parsedData);
-                    return;
-                } catch (e) {}
+            // Fallback 2: retry lite at LOW temperature (high temp often causes bad JSON)
+            updateStatus("Retry with low temp...");
+            const lowTempResult = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.3);
+            parsed = tryParse(lowTempResult, "3.1-flash-lite low-temp");
+            if (parsed) { acceptData(parsed); return; }
+
+            // All failed — auto-skip instead of pausing, keeps workflow moving
+            console.warn("🚨 All AI attempts failed. Auto-skipping this photo.");
+            updateStatus("API failed — auto-skipping...");
+            await new Promise(r => setTimeout(r, logNormalDelay(1000, 0.4)));
+            let clicked = await forceClickExactText('Skip', 0);
+            if (!clicked) clicked = await forceClickExactText('Submit', 0);
+            if (!clicked) {
+                stopForManualAction("API failed and no Skip/Submit button found");
+            } else {
+                console.log("✅ Auto-skipped after API failure");
+                setTimeout(() => { isProcessing = false; }, 2000);
             }
-
-            stopForManualAction("API Error - Could not get valid rating");
         }
 
         // ==========================================
