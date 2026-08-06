@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.7
 // @namespace    http://tampermonkey.net/
-// @version      28.7
+// @version      28.8
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -1107,22 +1107,27 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                         sessionHITsDone++;
                         sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
 
-                        // Skip → wait → Submit flow (as shown in the video)
-                        // If Skip is visible, click Skip first — this advances to a state
-                        // where Submit becomes visible. Then click Submit.
-                        if (skipExists) {
-                            console.log("👉 Skip visible — clicking Skip first (Skip→Submit flow)");
+                        // ALWAYS try Submit FIRST — if it's visible on the page, just click it.
+                        // Only fall back to the Skip → wait → Submit sequence if Submit is not directly available.
+                        updateStatus("Clicking Submit...");
+                        let submitClicked = await forceClickExactText('Submit', 0);
+
+                        if (submitClicked) {
+                            console.log("✅ Submit clicked directly");
+                            updateStatus("Submitted!");
+                            setTimeout(() => { isProcessing = false; }, 2000);
+                        } else {
+                            // No Submit visible — try Skip → wait → Submit sequence
+                            console.log("👉 No Submit visible — trying Skip → Submit sequence");
                             updateStatus("Clicking Skip...");
                             const clickedSkip = await forceClickExactText('Skip', 0);
                             if (!clickedSkip) {
-                                stopForManualAction("Could not click Skip button");
+                                stopForManualAction("Neither Submit nor Skip found");
                             } else {
-                                // Wait for page/UI to transition and reveal Submit
                                 await bgAwareSleep(logNormalDelay(1800, 0.4));
-                                updateStatus("Looking for Submit...");
+                                updateStatus("Waiting for Submit to appear...");
 
-                                // Poll for Submit up to ~5s
-                                let submitClicked = false;
+                                // Poll for Submit up to ~5s after Skip
                                 for (let i = 0; i < 5; i++) {
                                     submitClicked = await forceClickExactText('Submit', 0);
                                     if (submitClicked) break;
@@ -1130,22 +1135,13 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                                 }
 
                                 if (submitClicked) {
+                                    console.log("✅ Submit clicked after Skip");
                                     updateStatus("Submitted!");
-                                    setTimeout(() => { isProcessing = false; }, 2000);
                                 } else {
-                                    // Skip may have already advanced without a follow-up Submit
+                                    // Skip may have already advanced without needing Submit
                                     console.log("ℹ️ No Submit appeared after Skip — assuming Skip already advanced");
                                     updateStatus("Advanced (via Skip only)");
-                                    setTimeout(() => { isProcessing = false; }, 2000);
                                 }
-                            }
-                        } else {
-                            // Direct Submit flow (no Skip button on page)
-                            let clickedSubmit = await forceClickExactText('Submit', 0);
-                            if (!clickedSubmit) {
-                                stopForManualAction("Submit button not found and no Skip either");
-                            } else {
-                                updateStatus("Submitted!");
                                 setTimeout(() => { isProcessing = false; }, 2000);
                             }
                         }
