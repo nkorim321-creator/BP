@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.8
 // @namespace    http://tampermonkey.net/
-// @version      28.8
+// @version      28.9
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -785,6 +785,16 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
             currentMousePos.y = targetY;
         }
 
+        // Check if an element is actually visible on screen (not display:none, not zero-size, not hidden by wrapper)
+        function isElementVisible(el) {
+            if (!el || !el.offsetParent) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 3 || rect.height < 3) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) return false;
+            return true;
+        }
+
         async function forceClickExactText(searchText, expectedIndex = 0) {
             const allElements = Array.from(document.body.querySelectorAll('*'));
             let matches = allElements.filter(el => {
@@ -793,6 +803,9 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
             });
 
             let deepestMatches = matches.filter(el => !matches.some(otherEl => el !== otherEl && el.contains(otherEl)));
+
+            // Filter to only actually-visible elements — hidden Submit/Skip elements in MTurk wrappers must be skipped
+            deepestMatches = deepestMatches.filter(isElementVisible);
 
             if (deepestMatches.length > expectedIndex) {
                 let element = deepestMatches[expectedIndex];
@@ -1107,42 +1120,41 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                         sessionHITsDone++;
                         sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
 
-                        // ALWAYS try Submit FIRST — if it's visible on the page, just click it.
-                        // Only fall back to the Skip → wait → Submit sequence if Submit is not directly available.
-                        updateStatus("Clicking Submit...");
-                        let submitClicked = await forceClickExactText('Submit', 0);
+                        // User's rule: if Skip is visible, click Skip first (it acts as the advance/submit).
+                        // Only fall back to Submit if Skip is not visible on the page.
+                        updateStatus("Clicking Skip...");
+                        const clickedSkip = await forceClickExactText('Skip', 0);
 
-                        if (submitClicked) {
-                            console.log("✅ Submit clicked directly");
-                            updateStatus("Submitted!");
+                        if (clickedSkip) {
+                            console.log("✅ Skip clicked (visible in UI)");
+                            // After Skip, some flows show a Submit button — poll briefly and click if it appears
+                            await bgAwareSleep(logNormalDelay(1800, 0.4));
+                            updateStatus("Checking for Submit after Skip...");
+                            let submitAfterSkip = false;
+                            for (let i = 0; i < 5; i++) {
+                                submitAfterSkip = await forceClickExactText('Submit', 0);
+                                if (submitAfterSkip) break;
+                                await new Promise(r => setTimeout(r, 1000));
+                            }
+                            if (submitAfterSkip) {
+                                console.log("✅ Submit clicked after Skip");
+                                updateStatus("Submitted!");
+                            } else {
+                                console.log("ℹ️ No Submit appeared after Skip — Skip advanced the page");
+                                updateStatus("Advanced (via Skip)");
+                            }
                             setTimeout(() => { isProcessing = false; }, 2000);
                         } else {
-                            // No Submit visible — try Skip → wait → Submit sequence
-                            console.log("👉 No Submit visible — trying Skip → Submit sequence");
-                            updateStatus("Clicking Skip...");
-                            const clickedSkip = await forceClickExactText('Skip', 0);
-                            if (!clickedSkip) {
-                                stopForManualAction("Neither Submit nor Skip found");
-                            } else {
-                                await bgAwareSleep(logNormalDelay(1800, 0.4));
-                                updateStatus("Waiting for Submit to appear...");
-
-                                // Poll for Submit up to ~5s after Skip
-                                for (let i = 0; i < 5; i++) {
-                                    submitClicked = await forceClickExactText('Submit', 0);
-                                    if (submitClicked) break;
-                                    await new Promise(r => setTimeout(r, 1000));
-                                }
-
-                                if (submitClicked) {
-                                    console.log("✅ Submit clicked after Skip");
-                                    updateStatus("Submitted!");
-                                } else {
-                                    // Skip may have already advanced without needing Submit
-                                    console.log("ℹ️ No Submit appeared after Skip — assuming Skip already advanced");
-                                    updateStatus("Advanced (via Skip only)");
-                                }
+                            // Skip not visible — try Submit directly
+                            console.log("👉 No Skip visible — trying Submit directly");
+                            updateStatus("Clicking Submit...");
+                            const submitClicked = await forceClickExactText('Submit', 0);
+                            if (submitClicked) {
+                                console.log("✅ Submit clicked directly");
+                                updateStatus("Submitted!");
                                 setTimeout(() => { isProcessing = false; }, 2000);
+                            } else {
+                                stopForManualAction("Neither Skip nor Submit visible");
                             }
                         }
                     } catch (submitErr) {
