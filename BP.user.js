@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.6
 // @namespace    http://tampermonkey.net/
-// @version      28.6
+// @version      28.7
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -449,6 +449,54 @@
             });
         }
 
+        // Extract image as base64 — canvas first (already-loaded pixels, no network),
+        // then GM_xmlhttpRequest fallback which reads from browser cache
+        async function extractImageAsBase64(imgElement) {
+            return new Promise((resolve) => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const w = imgElement.naturalWidth || imgElement.width || 400;
+                    const h = imgElement.naturalHeight || imgElement.height || 400;
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(imgElement, 0, 0, w, h);
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                    console.log(`📸 Canvas extraction OK (${w}x${h})`);
+                    resolve(dataUrl);
+                } catch (e) {
+                    console.log("📸 Canvas blocked (CORS) — using GM_xmlhttpRequest from browser cache");
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: imgElement.src,
+                        responseType: 'blob',
+                        headers: {
+                            "Cache-Control": "max-stale=3600",
+                            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                            "Referer": window.location.href
+                        },
+                        onload: function(res) {
+                            if (res.status === 200 || res.status === 304) {
+                                const reader = new FileReader();
+                                reader.onloadend = () => {
+                                    console.log(`📸 GM_xhr extraction OK (${res.response.size} bytes)`);
+                                    resolve(reader.result);
+                                };
+                                reader.readAsDataURL(res.response);
+                            } else {
+                                console.error(`📸 GM_xhr failed: HTTP ${res.status}`);
+                                resolve(null);
+                            }
+                        },
+                        onerror: function() {
+                            console.error("📸 GM_xhr network error");
+                            resolve(null);
+                        }
+                    });
+                }
+            });
+        }
+
         async function processHIT() {
             if (isProcessing) return;
 
@@ -459,8 +507,16 @@
             isProcessing = true;
             currentPhotoUrl = img.src;
             updateStatus("Processing...");
+
+            updateStatus("Extracting image...");
+            const base64Data = await extractImageAsBase64(img);
+            if (!base64Data) {
+                stopForManualAction("Could not extract image");
+                return;
+            }
+
             updateStatus("Calling AI...");
-            await getRatingFromGemini(img.src, 1);
+            await getRatingFromGemini(base64Data, 1);
         }
 
         // Compact prompt framings (much shorter, same intent)
@@ -484,9 +540,9 @@
             GM_setValue('ben_ai_cache', JSON.stringify(cache));
         }
 
-        async function getRatingFromGemini(imageUrl, retryCount) {
-            // Check response cache first — massive cost saver
-            const photoId = extractPhotoId(imageUrl);
+        async function getRatingFromGemini(imageData, retryCount) {
+            // Cache key comes from the ORIGINAL photo URL (not the base64 blob)
+            const photoId = extractPhotoId(currentPhotoUrl || imageData);
             const cache = getResponseCache();
             if (cache[photoId] && cache[photoId].data) {
                 console.log(`💾 Cache HIT for photo ${photoId} — no API call needed`);
@@ -522,7 +578,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
 
             // Try primary (cheap, fast) — 1 attempt only
             updateStatus("Calling 3.1-flash-lite...");
-            let result = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, temperature);
+            let result = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, temperature);
 
             function tryParse(res, modelLabel) {
                 if (!res.success) {
@@ -556,14 +612,14 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
             // Retry 1: same lite model, low temperature (high temp often causes bad JSON)
             updateStatus("3.1-flash-lite retry (low temp)...");
             await new Promise(r => setTimeout(r, 2000));
-            let retry1 = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.3);
+            let retry1 = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, 0.3);
             parsed = tryParse(retry1, "3.1-flash-lite attempt 2 (temp=0.3)");
             if (parsed) { acceptData(parsed); return; }
 
             // Retry 2: same lite model, moderate temperature
             updateStatus("3.1-flash-lite retry (mid temp)...");
             await new Promise(r => setTimeout(r, 3000));
-            let retry2 = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.7);
+            let retry2 = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, 0.7);
             parsed = tryParse(retry2, "3.1-flash-lite attempt 3 (temp=0.7)");
             if (parsed) { acceptData(parsed); return; }
 
