@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.5
 // @namespace    http://tampermonkey.net/
-// @version      28.5
+// @version      28.6
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -413,18 +413,38 @@
                     onload: (res) => {
                         try {
                             const responseJSON = JSON.parse(res.responseText);
-                            if (responseJSON.error) resolve({ success: false, model: modelName, error: responseJSON.error.message });
-                            else if (responseJSON.choices && responseJSON.choices[0] && responseJSON.choices[0].message) {
-                                resolve({ success: true, model: modelName, text: responseJSON.choices[0].message.content });
+                            if (responseJSON.error) {
+                                console.error(`❌ ${modelName} API ERROR:`, responseJSON.error);
+                                resolve({ success: false, model: modelName, error: responseJSON.error.message || JSON.stringify(responseJSON.error) });
+                            } else if (responseJSON.choices && responseJSON.choices[0]) {
+                                const choice = responseJSON.choices[0];
+                                const content = choice.message && choice.message.content;
+                                if (content && content.trim().length > 0) {
+                                    resolve({ success: true, model: modelName, text: content });
+                                } else {
+                                    // Content missing — could be safety block, empty generation, etc.
+                                    const finishReason = choice.finish_reason || 'unknown';
+                                    console.error(`❌ ${modelName} EMPTY CONTENT — finish_reason: ${finishReason}`);
+                                    console.error("Full response:", JSON.stringify(responseJSON).slice(0, 800));
+                                    resolve({ success: false, model: modelName, error: `Empty content (finish_reason: ${finishReason})` });
+                                }
                             } else {
-                                resolve({ success: false, model: modelName, error: "No content in response" });
+                                console.error(`❌ ${modelName} UNEXPECTED STRUCTURE. HTTP status: ${res.status}. Response:`, res.responseText.slice(0, 500));
+                                resolve({ success: false, model: modelName, error: `Unexpected response structure (HTTP ${res.status})` });
                             }
                         } catch (e) {
-                            resolve({ success: false, model: modelName, error: "Parse Error" });
+                            console.error(`❌ ${modelName} PARSE ERROR. HTTP status: ${res.status}. Raw:`, res.responseText.slice(0, 500));
+                            resolve({ success: false, model: modelName, error: `Parse Error: ${e.message}` });
                         }
                     },
-                    onerror: () => resolve({ success: false, model: modelName, error: "Network Error" }),
-                    ontimeout: () => resolve({ success: false, model: modelName, error: "Timeout Error" })
+                    onerror: (err) => {
+                        console.error(`❌ ${modelName} NETWORK ERROR:`, err);
+                        resolve({ success: false, model: modelName, error: "Network Error" });
+                    },
+                    ontimeout: () => {
+                        console.error(`❌ ${modelName} TIMEOUT after 30s`);
+                        resolve({ success: false, model: modelName, error: "Timeout Error" });
+                    }
                 });
             });
         }
