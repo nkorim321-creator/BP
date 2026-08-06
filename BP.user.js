@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater (Version 28.3 - Multi-Layer Stealth)
 // @namespace    http://tampermonkey.net/
-// @version      28.4
+// @version      28.5
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -530,33 +530,29 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                 applyToForm(parsedData);
             }
 
-            let parsed = tryParse(result, "3.1-flash-lite");
+            let parsed = tryParse(result, "3.1-flash-lite attempt 1");
             if (parsed) { acceptData(parsed); return; }
 
-            // Fallback 1: more capable model at same temperature
-            updateStatus("Fallback to 3.5-flash...");
-            let backupResult = await callGeminiAPI("gemini-3.5-flash", imageUrl, prompt, temperature);
-            parsed = tryParse(backupResult, "3.5-flash");
+            // Retry 1: same lite model, low temperature (high temp often causes bad JSON)
+            updateStatus("3.1-flash-lite retry (low temp)...");
+            await new Promise(r => setTimeout(r, 2000));
+            let retry1 = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.3);
+            parsed = tryParse(retry1, "3.1-flash-lite attempt 2 (temp=0.3)");
             if (parsed) { acceptData(parsed); return; }
 
-            // Fallback 2: retry lite at LOW temperature (high temp often causes bad JSON)
-            updateStatus("Retry with low temp...");
-            const lowTempResult = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.3);
-            parsed = tryParse(lowTempResult, "3.1-flash-lite low-temp");
+            // Retry 2: same lite model, moderate temperature
+            updateStatus("3.1-flash-lite retry (mid temp)...");
+            await new Promise(r => setTimeout(r, 3000));
+            let retry2 = await callGeminiAPI("gemini-3.1-flash-lite", imageUrl, prompt, 0.7);
+            parsed = tryParse(retry2, "3.1-flash-lite attempt 3 (temp=0.7)");
             if (parsed) { acceptData(parsed); return; }
 
-            // All failed — auto-skip instead of pausing, keeps workflow moving
-            console.warn("🚨 All AI attempts failed. Auto-skipping this photo.");
-            updateStatus("API failed — auto-skipping...");
-            await new Promise(r => setTimeout(r, logNormalDelay(1000, 0.4)));
-            let clicked = await forceClickExactText('Skip', 0);
-            if (!clicked) clicked = await forceClickExactText('Submit', 0);
-            if (!clicked) {
-                stopForManualAction("API failed and no Skip/Submit button found");
-            } else {
-                console.log("✅ Auto-skipped after API failure");
-                setTimeout(() => { isProcessing = false; }, 2000);
-            }
+            // All 3 attempts on 3.1-flash-lite failed — wait 10-15s then reload page
+            const waitSec = 10 + Math.floor(Math.random() * 6);
+            console.warn(`🚨 All 3.1-flash-lite attempts failed. Reloading in ${waitSec}s to get fresh photo.`);
+            updateStatus(`API failed — reloading in ${waitSec}s...`, true);
+            await new Promise(r => setTimeout(r, waitSec * 1000));
+            location.reload();
         }
 
         // ==========================================
@@ -1035,16 +1031,47 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                         sessionHITsDone++;
                         sessionStorage.setItem('ben_session_hits', sessionHITsDone.toString());
 
-                        let clickedAdvance = await forceClickExactText('Submit', 0);
-                        if (!clickedAdvance) {
-                            console.log("ℹ️ Submit button not found — trying Skip (photofeeler-style advance)");
-                            clickedAdvance = await forceClickExactText('Skip', 0);
-                        }
-                        if (!clickedAdvance) {
-                            stopForManualAction("Neither Submit nor Skip found");
+                        // Skip → wait → Submit flow (as shown in the video)
+                        // If Skip is visible, click Skip first — this advances to a state
+                        // where Submit becomes visible. Then click Submit.
+                        if (skipExists) {
+                            console.log("👉 Skip visible — clicking Skip first (Skip→Submit flow)");
+                            updateStatus("Clicking Skip...");
+                            const clickedSkip = await forceClickExactText('Skip', 0);
+                            if (!clickedSkip) {
+                                stopForManualAction("Could not click Skip button");
+                            } else {
+                                // Wait for page/UI to transition and reveal Submit
+                                await bgAwareSleep(logNormalDelay(1800, 0.4));
+                                updateStatus("Looking for Submit...");
+
+                                // Poll for Submit up to ~5s
+                                let submitClicked = false;
+                                for (let i = 0; i < 5; i++) {
+                                    submitClicked = await forceClickExactText('Submit', 0);
+                                    if (submitClicked) break;
+                                    await new Promise(r => setTimeout(r, 1000));
+                                }
+
+                                if (submitClicked) {
+                                    updateStatus("Submitted!");
+                                    setTimeout(() => { isProcessing = false; }, 2000);
+                                } else {
+                                    // Skip may have already advanced without a follow-up Submit
+                                    console.log("ℹ️ No Submit appeared after Skip — assuming Skip already advanced");
+                                    updateStatus("Advanced (via Skip only)");
+                                    setTimeout(() => { isProcessing = false; }, 2000);
+                                }
+                            }
                         } else {
-                            updateStatus("Submitted!");
-                            setTimeout(() => { isProcessing = false; }, 2000);
+                            // Direct Submit flow (no Skip button on page)
+                            let clickedSubmit = await forceClickExactText('Submit', 0);
+                            if (!clickedSubmit) {
+                                stopForManualAction("Submit button not found and no Skip either");
+                            } else {
+                                updateStatus("Submitted!");
+                                setTimeout(() => { isProcessing = false; }, 2000);
+                            }
                         }
                     } catch (submitErr) {
                         console.error("Error clicking Submit:", submitErr);
