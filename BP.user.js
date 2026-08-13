@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.9
 // @namespace    http://tampermonkey.net/
-// @version      28.9
+// @version      29.0
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -409,7 +409,7 @@
                         response_format: { type: "json_object" },
                         temperature: temperature
                     }),
-                    timeout: 30000,
+                    timeout: 45000,
                     onload: (res) => {
                         try {
                             const responseJSON = JSON.parse(res.responseText);
@@ -442,7 +442,7 @@
                         resolve({ success: false, model: modelName, error: "Network Error" });
                     },
                     ontimeout: () => {
-                        console.error(`❌ ${modelName} TIMEOUT after 30s`);
+                        console.error(`❌ ${modelName} TIMEOUT after 45s`);
                         resolve({ success: false, model: modelName, error: "Timeout Error" });
                     }
                 });
@@ -606,27 +606,42 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                 applyToForm(parsedData);
             }
 
+            // Detect transient (temporary) failures worth retrying the SAME photo:
+            // 503 overload, 429 rate limit, timeouts, network glitches — all Google-side and temporary.
+            function isTransient(res) {
+                const e = (res && res.error) ? String(res.error).toLowerCase() : '';
+                return e.includes('503') || e.includes('unavailable') || e.includes('high demand')
+                    || e.includes('429') || e.includes('overload') || e.includes('timeout')
+                    || e.includes('network') || e.includes('408') || e.includes('500') || e.includes('502');
+            }
+
             let parsed = tryParse(result, "3.1-flash-lite attempt 1");
             if (parsed) { acceptData(parsed); return; }
+            let lastRes = result;
 
-            // Retry 1: same lite model, low temperature (high temp often causes bad JSON)
-            updateStatus("3.1-flash-lite retry (low temp)...");
-            await new Promise(r => setTimeout(r, 2000));
-            let retry1 = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, 0.3);
-            parsed = tryParse(retry1, "3.1-flash-lite attempt 2 (temp=0.3)");
-            if (parsed) { acceptData(parsed); return; }
+            // Retry the SAME photo with exponential backoff. Transient Google errors (503/timeout)
+            // clear up on their own, so waiting and retrying the same image is better than reloading
+            // (reloading just burns through photos while the API is still down).
+            const backoffs = [3000, 6000, 12000, 20000, 30000]; // ms, grows each try
+            const temps = [0.3, 0.7, 0.9, 0.5, 0.8];
+            for (let i = 0; i < backoffs.length; i++) {
+                const wait = backoffs[i] + Math.floor(Math.random() * 2000);
+                const waitS = Math.round(wait / 1000);
+                const transientNote = isTransient(lastRes) ? " (Google busy, waiting)" : "";
+                updateStatus(`Retry ${i + 2}/6 in ${waitS}s${transientNote}...`);
+                console.log(`⏳ Waiting ${waitS}s before retry ${i + 2} (last error: ${lastRes.error})`);
+                await new Promise(r => setTimeout(r, wait));
 
-            // Retry 2: same lite model, moderate temperature
-            updateStatus("3.1-flash-lite retry (mid temp)...");
-            await new Promise(r => setTimeout(r, 3000));
-            let retry2 = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, 0.7);
-            parsed = tryParse(retry2, "3.1-flash-lite attempt 3 (temp=0.7)");
-            if (parsed) { acceptData(parsed); return; }
+                const res = await callGeminiAPI("gemini-3.1-flash-lite", imageData, prompt, temps[i]);
+                parsed = tryParse(res, `3.1-flash-lite attempt ${i + 2}`);
+                if (parsed) { acceptData(parsed); return; }
+                lastRes = res;
+            }
 
-            // All 3 attempts on 3.1-flash-lite failed — wait 10-15s then reload page
-            const waitSec = 10 + Math.floor(Math.random() * 6);
-            console.warn(`🚨 All 3.1-flash-lite attempts failed. Reloading in ${waitSec}s to get fresh photo.`);
-            updateStatus(`API failed — reloading in ${waitSec}s...`, true);
+            // Everything failed even after long backoff — reload as a last resort to get a fresh start.
+            const waitSec = 15 + Math.floor(Math.random() * 10);
+            console.warn(`🚨 All 6 attempts failed after backoff. Last error: ${lastRes.error}. Reloading in ${waitSec}s.`);
+            updateStatus(`API down — reloading in ${waitSec}s...`, true);
             await new Promise(r => setTimeout(r, waitSec * 1000));
             location.reload();
         }
