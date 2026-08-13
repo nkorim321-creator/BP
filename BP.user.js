@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MTurk Human-Like Rater 28.9
 // @namespace    http://tampermonkey.net/
-// @version      29.0
+// @version      29.1
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -161,6 +161,11 @@
                     slang: seed() < 0.3,
                     critical: seed() < 0.4
                 },
+                // Layer B: this account's FIXED prompt framing (0-3), consistent personality
+                framingIndex: Math.floor(seed() * 4),
+                // Layer D: this account's timing spread — some people are erratic, some steady
+                timingSigma: 0.35 + seed() * 0.45,
+                outlierRate: 0.03 + seed() * 0.06,
                 created: Date.now()
             };
 
@@ -170,11 +175,47 @@
 
         const personality = getWorkerPersonality();
 
+        // Backward-compat defaults for personalities created before these fields existed
+        if (typeof personality.framingIndex !== 'number') personality.framingIndex = Math.floor(Math.random() * 4);
+        if (typeof personality.timingSigma !== 'number') personality.timingSigma = 0.35 + Math.random() * 0.45;
+        if (typeof personality.outlierRate !== 'number') personality.outlierRate = 0.03 + Math.random() * 0.06;
+
+        // --- Layer C: Daily Mood Swing ---
+        // Each day this account wakes up in a slightly different mood — some days harsher,
+        // some days more generous. Real humans aren't consistent day to day.
+        function getDailyMood() {
+            const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+            const moodKey = 'ben_mood_' + (sessionStorage.getItem('ben_tab_id') || 'default');
+            let stored = null;
+            try { stored = JSON.parse(GM_getValue(moodKey, 'null')); } catch (e) {}
+            if (stored && stored.date === today) return stored.mood;
+
+            // New day → new mood. Bias between -0.35 (harsh) and +0.35 (generous).
+            const mood = Math.round((Math.random() - 0.5) * 0.7 * 100) / 100;
+            GM_setValue(moodKey, JSON.stringify({ date: today, mood }));
+            console.log(`😐 Today's mood bias: ${mood > 0 ? '+' : ''}${mood} (${mood > 0.1 ? 'generous' : mood < -0.1 ? 'harsh' : 'neutral'})`);
+            return mood;
+        }
+        const dailyMood = getDailyMood();
+
         function logNormalDelay(median, sigma) {
+            // Layer D: widen the spread by this account's personal timingSigma so different
+            // accounts have visibly different timing rhythms (some steady, some erratic).
+            const effectiveSigma = sigma * (0.7 + (personality.timingSigma || 0.5) * 1.2);
             const u1 = Math.random();
             const u2 = Math.random();
             const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-            return Math.floor(Math.max(median * 0.3, median * Math.exp(sigma * z)));
+            let delay = median * Math.exp(effectiveSigma * z);
+
+            // Layer D: occasional timing outliers — a distraction, a re-read, a quick snap decision.
+            const r = Math.random();
+            if (r < (personality.outlierRate || 0.05)) {
+                delay *= (2.5 + Math.random() * 2.5); // unusually slow (got distracted)
+            } else if (r < (personality.outlierRate || 0.05) * 2) {
+                delay *= (0.35 + Math.random() * 0.2); // unusually fast (snap decision)
+            }
+
+            return Math.floor(Math.max(median * 0.25, delay));
         }
 
         function applyRatingNoise(score, traitBias, extraBias = 0) {
@@ -290,9 +331,51 @@
         }
 
         // Adjust note to match personality voice
+        // Layer A: synonym banks — swap common words so the same AI vocabulary doesn't
+        // repeat identically across accounts. Each word has interchangeable alternatives.
+        const SYNONYM_BANK = [
+            ['cool', 'nice', 'neat', 'solid', 'sharp'],
+            ['great', 'nice', 'good', 'lovely', 'solid'],
+            ['love', 'like', 'dig', 'really like'],
+            ['awesome', 'great', 'excellent', 'really nice'],
+            ['bg', 'background', 'backdrop', 'setting'],
+            ['pic', 'photo', 'shot', 'pic'],
+            ['smile', 'grin', 'smile'],
+            ['outfit', 'clothes', 'look', 'getup'],
+            ['jacket', 'jacket', 'coat'],
+            ['lighting', 'light', 'lighting'],
+            ['nice', 'good', 'decent', 'solid'],
+            ['harsh', 'rough', 'strong', 'harsh'],
+            ['blurry', 'blurry', 'fuzzy', 'out of focus'],
+            ['dark', 'dim', 'dark', 'low-light'],
+            ['cluttered', 'messy', 'busy', 'cluttered'],
+            ['vibe', 'vibe', 'feel', 'energy']
+        ];
+
+        function applySynonyms(note) {
+            if (!note) return note;
+            let words = note.split(/(\s+)/); // keep whitespace tokens
+            for (let i = 0; i < words.length; i++) {
+                const raw = words[i];
+                const lower = raw.toLowerCase().replace(/[.,!?]/g, '');
+                if (!lower) continue;
+                for (const bank of SYNONYM_BANK) {
+                    if (bank[0] === lower && Math.random() < 0.35) {
+                        const choice = bank[Math.floor(Math.random() * bank.length)];
+                        // preserve trailing punctuation
+                        const punct = raw.match(/[.,!?]+$/);
+                        words[i] = choice + (punct ? punct[0] : '');
+                        break;
+                    }
+                }
+            }
+            return words.join('');
+        }
+
         function styleNote(note) {
             if (!note) return note;
             let n = note.trim();
+            n = applySynonyms(n); // Layer A: vocabulary variance
             const v = personality.voice;
             if (v.lowercaseOnly) n = n.toLowerCase();
             if (v.usesExclamation && !n.endsWith('!') && !n.endsWith('.') && Math.random() < 0.4) n += '!';
@@ -553,9 +636,13 @@
                 return;
             }
 
-            const framing = PROMPT_FRAMINGS[Math.floor(Math.random() * PROMPT_FRAMINGS.length)];
+            // Layer B: this account uses its OWN fixed framing most of the time (consistent
+            // personality), with an occasional drift to another framing (humans aren't robots).
+            let framingIdx = personality.framingIndex;
+            if (Math.random() < 0.15) framingIdx = Math.floor(Math.random() * PROMPT_FRAMINGS.length);
+            const framing = PROMPT_FRAMINGS[framingIdx];
             const temperature = 0.6 + Math.random() * 0.7;
-            console.log(`🎲 Framing #${PROMPT_FRAMINGS.indexOf(framing)}, temp=${temperature.toFixed(2)}`);
+            console.log(`🎲 Framing #${framingIdx} (account default #${personality.framingIndex}), temp=${temperature.toFixed(2)}`);
 
             const prompt = `${framing}
 
@@ -899,9 +986,12 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
             // Adaptive session-wide harshness (self-correcting against inflation)
             const adaptive = computeAdaptiveHarshness();
 
-            data.smart = applyRatingNoise(clamp(data.smart), personality.ratingBias.smart, opinionBias.smart + adaptive);
-            data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy, opinionBias.trustworthy + adaptive);
-            data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive, opinionBias.attractive + adaptive);
+            // Layer C: today's mood bias — applied to all three traits this session
+            const extra = adaptive + dailyMood;
+
+            data.smart = applyRatingNoise(clamp(data.smart), personality.ratingBias.smart, opinionBias.smart + extra);
+            data.trustworthy = applyRatingNoise(clamp(data.trustworthy), personality.ratingBias.trustworthy, opinionBias.trustworthy + extra);
+            data.attractive = applyRatingNoise(clamp(data.attractive), personality.ratingBias.attractive, opinionBias.attractive + extra);
 
             const traitKeys = ['smart', 'trustworthy', 'attractive'];
 
@@ -1109,7 +1199,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                             if (textarea) {
                                 await simulateHumanTyping(textarea, styledNote);
                             }
-                            addUsedNote(styledNote);
+                            addUsedNote(rawNote); // store canonical raw note so dedup catches it regardless of synonym styling
                             wroteComment = true;
                             await bgAwareSleep(logNormalDelay(600, 0.4));
                         } else {
