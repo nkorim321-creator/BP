@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater 28.9
+// @name         MTurk Human-Like Rater 29.1
 // @namespace    http://tampermonkey.net/
 // @version      29.1
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
