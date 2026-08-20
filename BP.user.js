@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater 29.1
+// @name         MTurk Human-Like Rater 29.2
 // @namespace    http://tampermonkey.net/
-// @version      29.1
+// @version      29.2
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -120,7 +120,6 @@
         // প্রতিটা MTurk worker ID-র জন্য unique "personality" তৈরি করে store করে
         // এতে cross-account correlation ধরা যায় না
         function getWorkerPersonality() {
-            const workerIdEl = document.querySelector('[data-worker-id], .worker-id');
             const tabId = sessionStorage.getItem('ben_tab_id') || (Math.random().toString(36).slice(2, 10));
             sessionStorage.setItem('ben_tab_id', tabId);
             const personalityKey = 'ben_personality_' + tabId;
@@ -133,11 +132,9 @@
             const seed = Math.random;
             personality = {
                 ratingBias: { smart: (seed() - 0.5) * 0.5, trustworthy: (seed() - 0.5) * 0.5, attractive: (seed() - 0.5) * 0.5 },
-                speedProfile: ['slow', 'medium', 'fast'][Math.floor(seed() * 3)],
                 speedMultiplier: 0.7 + seed() * 1.1,
                 correctionRate: 0.03 + seed() * 0.12,
                 distractionRate: 0.02 + seed() * 0.06,
-                noteStyle: ['minimal', 'short', 'medium'][Math.floor(seed() * 3)],
                 noteRate: 0.15 + seed() * 0.13,
                 harshness: -0.25 + seed() * 0.4,
                 traitOrder: seed() < 0.15 ? 'shuffled' : 'normal',
@@ -251,7 +248,7 @@
         function savePhotoMemory(mem) {
             const keys = Object.keys(mem);
             if (keys.length > 800) {
-                const sorted = keys.sort((a, b) => (mem[a].t || 0) - (mem[b].t || 0));
+                const sorted = keys.sort((a, b) => (mem[a].ts || 0) - (mem[b].ts || 0));
                 for (let i = 0; i < keys.length - 800; i++) delete mem[sorted[i]];
             }
             GM_setValue('ben_photo_memory', JSON.stringify(mem));
@@ -339,17 +336,17 @@
             ['love', 'like', 'dig', 'really like'],
             ['awesome', 'great', 'excellent', 'really nice'],
             ['bg', 'background', 'backdrop', 'setting'],
-            ['pic', 'photo', 'shot', 'pic'],
-            ['smile', 'grin', 'smile'],
+            ['pic', 'photo', 'shot', 'snap'],
+            ['smile', 'grin'],
             ['outfit', 'clothes', 'look', 'getup'],
-            ['jacket', 'jacket', 'coat'],
-            ['lighting', 'light', 'lighting'],
+            ['jacket', 'coat'],
+            ['lighting', 'light'],
             ['nice', 'good', 'decent', 'solid'],
-            ['harsh', 'rough', 'strong', 'harsh'],
-            ['blurry', 'blurry', 'fuzzy', 'out of focus'],
-            ['dark', 'dim', 'dark', 'low-light'],
-            ['cluttered', 'messy', 'busy', 'cluttered'],
-            ['vibe', 'vibe', 'feel', 'energy']
+            ['harsh', 'rough', 'strong'],
+            ['blurry', 'fuzzy', 'out of focus'],
+            ['dark', 'dim', 'low-light'],
+            ['cluttered', 'messy', 'busy'],
+            ['vibe', 'feel', 'energy']
         ];
 
         function applySynonyms(note) {
@@ -913,7 +910,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                 let element = deepestMatches[expectedIndex];
 
                 if (isTabReallyHidden()) {
-                    await backgroundFastClick(element);
+                    backgroundFastClick(element);
                 } else {
                     await simulateHumanMouseClick(element);
                 }
@@ -1042,7 +1039,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                     data[pick] = clamp(data[pick] + shift);
                     console.log(`🔄 Photo seen before — drifted ${pick} by ${shift}`);
                 }
-                mem[photoId] = { s: data.smart, t: data.trustworthy, a: data.attractive, ts: Date.now(), t2: Date.now() };
+                mem[photoId] = { s: data.smart, t: data.trustworthy, a: data.attractive, ts: Date.now() };
                 savePhotoMemory(mem);
             }
 
