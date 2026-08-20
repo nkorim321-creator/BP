@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         MTurk Human-Like Rater 29.2
+// @name         MTurk Human-Like Rater 29.3
 // @namespace    http://tampermonkey.net/
-// @version      29.2
+// @version      29.3
 // @description  Photo-specific comments, no default notes, slow typing, full anti-detection
 // @author       You
 // @match        *://worker.mturk.com/*
@@ -154,9 +154,7 @@
                 voice: {
                     usesExclamation: seed() < 0.2,
                     lowercaseOnly: seed() < 0.55,
-                    contractions: seed() < 0.4,
-                    slang: seed() < 0.3,
-                    critical: seed() < 0.4
+                    contractions: seed() < 0.4
                 },
                 // Layer B: this account's FIXED prompt framing (0-3), consistent personality
                 framingIndex: Math.floor(seed() * 4),
@@ -457,8 +455,6 @@
             if (dash && dash.parentNode) dash.parentNode.removeChild(dash);
         });
 
-        const tabId = sessionStorage.getItem('ben_tab_id') || 'default';
-
         let isProcessing = false;
 
         function stopForManualAction(reason) {
@@ -596,7 +592,7 @@
             }
 
             updateStatus("Calling AI...");
-            await getRatingFromGemini(base64Data, 1);
+            await getRatingFromGemini(base64Data);
         }
 
         // Compact prompt framings (much shorter, same intent)
@@ -620,7 +616,7 @@
             GM_setValue('ben_ai_cache', JSON.stringify(cache));
         }
 
-        async function getRatingFromGemini(imageData, retryCount) {
+        async function getRatingFromGemini(imageData) {
             // Cache key comes from the ORIGINAL photo URL (not the base64 blob)
             const photoId = extractPhotoId(currentPhotoUrl || imageData);
             const cache = getResponseCache();
@@ -1174,7 +1170,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
                     if (skipExists) {
                         const noteRate = personality.noteRate || 0.22;
                         const shouldWriteNote = Math.random() < noteRate;
-                        const rawNote = (data.note || '').trim().toLowerCase();
+                        const rawNote = String(data.note || '').trim().toLowerCase();
                         const genericNotes = ['nice', 'good photo', 'looks good', 'nice smile', 'great pic', 'background looks okay', 'cool photo', 'good', 'great', 'ok', 'okay', 'nice pic', 'good pic', 'love it', 'awesome'];
                         const isGeneric = genericNotes.some(g => rawNote === g || rawNote.startsWith(g + ' ') || rawNote.endsWith(' ' + g));
                         const hasValidNote = rawNote.length > 3 && rawNote.length < 40 && !isGeneric;
@@ -1191,7 +1187,7 @@ note: DEFAULT empty "". Write ONLY if something specific stands out. 2-5 lowerca
 
                         if (shouldWriteNote && hasValidNote && !alreadyUsed && !toneMismatch && avgScore >= 1.3) {
                             updateStatus("Writing comment...");
-                            const styledNote = styleNote(data.note.trim());
+                            const styledNote = styleNote(String(data.note).trim());
                             let textarea = document.querySelector('textarea');
                             if (textarea) {
                                 await simulateHumanTyping(textarea, styledNote);
